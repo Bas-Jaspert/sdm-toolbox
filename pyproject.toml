@@ -32,6 +32,8 @@ dependencies = [
     "pyqt6>=6.10",
     "qtpy>=2.4",
     "pyqt6-webengine>=6.10",
+    "ruff>=0.15.6",
+    "ty>=0.0.23",
 ]
 
 [build-system]

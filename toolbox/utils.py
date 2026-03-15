@@ -18,13 +18,16 @@ from sklearn.utils.fixes import parse_version
 
 
 def plot_permutation_importance(clf, X, y, ax):
-    result = permutation_importance(clf, X, y, n_repeats=100,
-                                    random_state=42, n_jobs=2)
+    result = permutation_importance(clf, X, y, n_repeats=100, random_state=42, n_jobs=2)
     perm_sorted_idx = result.importances_mean.argsort()
-    translation_dict = {f'b{i+1}': f'BIO{(i+1):02d}' for i in range(19)} |\
-        {'elevation': 'Geländehöhe', 'slope': 'Hangneigung',
-         'aspect': 'Exposition', 'landcover': 'CLC',
-         'snow_cover': 'Schneebedeckung', 'snow_depth': 'Schneetiefe'}
+    translation_dict = {f"b{i + 1}": f"BIO{(i + 1):02d}" for i in range(19)} | {
+        "elevation": "Geländehöhe",
+        "slope": "Hangneigung",
+        "aspect": "Exposition",
+        "landcover": "CLC",
+        "snow_cover": "Schneebedeckung",
+        "snow_depth": "Schneetiefe",
+    }
     # `labels` argument in boxplot is deprecated in matplotlib 3.9 and has been
     # renamed to `tick_labels`. The following code handles this, but as a
     # scikit-learn user you probably can write simpler code by using `labels=...`
@@ -34,9 +37,12 @@ def plot_permutation_importance(clf, X, y, ax):
         if parse_version(matplotlib.__version__) >= parse_version("3.9")
         else "labels"
     )
-    tick_labels_dict = {tick_labels_parameter_name: [translation_dict.get(key)
-                        if key in translation_dict.keys() else key
-                        for key in X.columns[perm_sorted_idx].tolist()]}
+    tick_labels_dict = {
+        tick_labels_parameter_name: [
+            translation_dict.get(key) if key in translation_dict.keys() else key
+            for key in X.columns[perm_sorted_idx].tolist()
+        ]
+    }
     ax.boxplot(result.importances[perm_sorted_idx].T, vert=False, **tick_labels_dict)
     ax.axvline(x=0, color="k", linestyle="--")
     return ax
@@ -52,19 +58,15 @@ def mask_s2_clouds(image):
     Returns
     -------
         ee.Image: A cloud-masked Sentinel-2 image.
-        """
-    qa = image.select('QA60')
+    """
+    qa = image.select("QA60")
 
     # Bits 10 and 11 are clouds and cirrus, respectively.
     cloud_bit_mask = 1 << 10
     cirrus_bit_mask = 1 << 11
 
     # Both flags should be set to zero, indicating clear conditions.
-    mask = (
-        qa.bitwiseAnd(cloud_bit_mask)
-        .eq(0)
-        .And(qa.bitwiseAnd(cirrus_bit_mask).eq(0))
-    )
+    mask = qa.bitwiseAnd(cloud_bit_mask).eq(0).And(qa.bitwiseAnd(cirrus_bit_mask).eq(0))
 
     return image.updateMask(mask).divide(10000)
 
@@ -82,12 +84,17 @@ def calculate_nari(img):
     nari: ee.Image
         An Image containing the Nari index.
     """
-    green = img.select('B3')
-    red_edge_1 = img.select('B5')
-    nari = (((ee.Image.constant(1).divide(green))
-            .subtract(ee.Image.constant(1).divide(red_edge_1)))
-            .divide((ee.Image.constant(1).divide(green))
-                    .add(ee.Image.constant(1).divide(red_edge_1))))
+    green = img.select("B3")
+    red_edge_1 = img.select("B5")
+    nari = (
+        (ee.Image.constant(1).divide(green)).subtract(
+            ee.Image.constant(1).divide(red_edge_1)
+        )
+    ).divide(
+        (ee.Image.constant(1).divide(green)).add(
+            ee.Image.constant(1).divide(red_edge_1)
+        )
+    )
     return nari
 
 
@@ -104,12 +111,17 @@ def calculate_ncri(img):
     nari: ee.Image
         An Image containing the NCRI index.
     """
-    red_edge_1 = img.select('B5')
-    red_edge_3 = img.select('B7')
-    ncri = (((ee.Image.constant(1).divide(red_edge_1))
-             .subtract(ee.Image.constant(1).divide(red_edge_3)))
-            .divide((ee.Image.constant(1).divide(red_edge_1))
-                    .add(ee.Image.constant(1).divide(red_edge_3))))
+    red_edge_1 = img.select("B5")
+    red_edge_3 = img.select("B7")
+    ncri = (
+        (ee.Image.constant(1).divide(red_edge_1)).subtract(
+            ee.Image.constant(1).divide(red_edge_3)
+        )
+    ).divide(
+        (ee.Image.constant(1).divide(red_edge_1)).add(
+            ee.Image.constant(1).divide(red_edge_3)
+        )
+    )
     return ncri
 
 
@@ -129,20 +141,21 @@ def gee_calculate_scrub_index(index: str = None, year: int = None):
         Image containing the requested index.
     """
 
-    sentinel = (ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
-                .filterDate(f'{year}-09-01', f'{year}-11-01')
-                .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 65))
-                .map(mask_s2_clouds)
-                .select(['B3', 'B5', 'B7'])
-                )
-    if index == 'nari':
+    sentinel = (
+        ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
+        .filterDate(f"{year}-09-01", f"{year}-11-01")
+        .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", 65))
+        .map(mask_s2_clouds)
+        .select(["B3", "B5", "B7"])
+    )
+    if index == "nari":
         nari = sentinel.map(calculate_nari)
         return nari.median()
-    elif index == 'ncri':
+    elif index == "ncri":
         ncri = sentinel.map(calculate_ncri)
         return ncri.median()
     else:
-        print('ERROR. No layer returned')
+        print("ERROR. No layer returned")
 
 
 def calculate_ndvi(year: int = None):
@@ -159,15 +172,16 @@ def calculate_ndvi(year: int = None):
     nari: ee.Image
         An Image containing the Nari index.
     """
-    sentinel = (ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
-                .filterDate(f'{year}-01-01', f'{year + 1}-01-01')
-                .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 65))
-                .map(mask_s2_clouds)
-                .select(['B3', 'B5', 'B7'])
-                )
-    red = sentinel.select('B4')
-    nir = sentinel.select('B8')
-    ndvi = (red.subtract(nir)).divide(red.add(nir)).mean().rename('NDVI')
+    sentinel = (
+        ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
+        .filterDate(f"{year}-01-01", f"{year + 1}-01-01")
+        .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", 65))
+        .map(mask_s2_clouds)
+        .select(["B3", "B5", "B7"])
+    )
+    red = sentinel.select("B4")
+    nir = sentinel.select("B8")
+    ndvi = (red.subtract(nir)).divide(red.add(nir)).mean().rename("NDVI")
     return ndvi
 
 
@@ -188,18 +202,15 @@ def get_era5_snowfall(date, poi):
         _description_
     """
     window_end = ee.Date(date)
-    window_start = window_end.advance(ee.Number(-4), 'days')
+    window_start = window_end.advance(ee.Number(-4), "days")
     era5 = (
-            ee.ImageCollection('ECMWF/ERA5_LAND/DAILY_AGGR')
-            .filterDate(window_start, window_end)
-            .select('snowfall_sum')
-            .sum()
-            .multiply(1000)
-        )
-    return era5.sampleRegions(
-        collection=poi,
-        properties=['name', 'datetime']
-        )
+        ee.ImageCollection("ECMWF/ERA5_LAND/DAILY_AGGR")
+        .filterDate(window_start, window_end)
+        .select("snowfall_sum")
+        .sum()
+        .multiply(1000)
+    )
+    return era5.sampleRegions(collection=poi, properties=["name", "datetime"])
 
 
 def get_era5_snowcover(date, poi):
@@ -219,20 +230,17 @@ def get_era5_snowcover(date, poi):
         _description_
     """
     window_end = ee.Date(date)
-    window_start = window_end.advance(ee.Number(-4), 'days')
+    window_start = window_end.advance(ee.Number(-4), "days")
     era5 = (
-            ee.ImageCollection('ECMWF/ERA5_LAND/DAILY_AGGR')
-            .filterDate(window_start, window_end)
-            .select('snow_cover')
-            .mean()
-        )
-    return era5.sampleRegions(
-        collection=poi,
-        properties=['name', 'datetime']
-        )
+        ee.ImageCollection("ECMWF/ERA5_LAND/DAILY_AGGR")
+        .filterDate(window_start, window_end)
+        .select("snow_cover")
+        .mean()
+    )
+    return era5.sampleRegions(collection=poi, properties=["name", "datetime"])
 
 
-def get_species_data(species_name, country_code, database: str = 'gbif'):
+def get_species_data(species_name, country_code, database: str = "gbif"):
     """
     Retrieves observational data for a specific species using the
     GBIF API and returns it as a pandas DataFrame.
@@ -249,15 +257,17 @@ def get_species_data(species_name, country_code, database: str = 'gbif'):
         pd.DataFrame
             A pandas DataFrame containing the observational data.
     """
-    if database == 'iNaturalist':
-        user_id = input('Type in User-ID: ')
+    if database == "iNaturalist":
+        user_id = input("Type in User-ID: ")
 
     match database:
-        case 'gbif': base_url = \
-            "https://api.gbif.org/v1/occurrence/search"
-        case 'iNaturalist': base_url = (
-            "https://api.inaturalist.org/v1/observations?"
-            f"user_id={user_id}&quality_grade=needs_id&rank=genus")
+        case "gbif":
+            base_url = "https://api.gbif.org/v1/occurrence/search"
+        case "iNaturalist":
+            base_url = (
+                "https://api.inaturalist.org/v1/observations?"
+                f"user_id={user_id}&quality_grade=needs_id&rank=genus"
+            )
     params = {
         "scientificName": species_name,
         "country": country_code,
@@ -276,14 +286,11 @@ def get_species_data(species_name, country_code, database: str = 'gbif'):
             df = pd.json_normalize(occurrences)
             return gpd.GeoDataFrame(
                 df,
-                geometry=gpd.points_from_xy(
-                    df.decimalLongitude,
-                    df.decimalLatitude),
-                crs="EPSG:4326"
-                )[["species", "year", "month", "geometry"]]
+                geometry=gpd.points_from_xy(df.decimalLongitude, df.decimalLatitude),
+                crs="EPSG:4326",
+            )[["species", "year", "month", "geometry"]]
         else:
-            print("No data found for the given species"
-                  "and country code.")
+            print("No data found for the given speciesand country code.")
             return None
     except requests.RequestException as e:
         print(f"Request failed: {e}")
@@ -309,24 +316,19 @@ def remove_duplicates(data, grain_size, aoi):
         _description_
     """
     # Select one occurrence record per pixel at the chosen spatial resolution
-    random_raster = ee.Image.random().reproject("EPSG:4326", None,
-                                                grain_size).clip(aoi)
+    random_raster = ee.Image.random().reproject("EPSG:4326", None, grain_size).clip(aoi)
     rand_point_vals = random_raster.sampleRegions(
         collection=ee.FeatureCollection(data), geometries=True
     )
     return rand_point_vals.distinct("random")
 
 
-def get_aoi_from_nuts(country_code: str = "AT", county_name: str=None):
-    NUTS_0 = gpd.read_file(
-        r"./assets/NUTS_RG_01M_2024_4326_LEVL_0.geojson")
-    NUTS_2 = gpd.read_file(
-        r"./assets/NUTS_RG_01M_2024_4326_LEVL_2.geojson")
-    country = geemap.gdf_to_ee(
-        NUTS_0.loc[NUTS_0.CNTR_CODE == country_code])
+def get_aoi_from_nuts(country_code: str = "AT", county_name: str = None):
+    NUTS_0 = gpd.read_file(r"./assets/NUTS_RG_01M_2024_4326_LEVL_0.geojson")
+    NUTS_2 = gpd.read_file(r"./assets/NUTS_RG_01M_2024_4326_LEVL_2.geojson")
+    country = geemap.gdf_to_ee(NUTS_0.loc[NUTS_0.CNTR_CODE == country_code])
     if county_name:
-        county = geemap.gdf_to_ee(
-            NUTS_2.loc[NUTS_2.NUTS_NAME == county_name])
+        county = geemap.gdf_to_ee(NUTS_2.loc[NUTS_2.NUTS_NAME == county_name])
     else:
         county = None
 
@@ -334,60 +336,143 @@ def get_aoi_from_nuts(country_code: str = "AT", county_name: str=None):
 
 
 def get_layer_information(year: int):
-    era5 = (
-            ee.ImageCollection('ECMWF/ERA5_LAND/HOURLY')
-            .filter(ee.Filter.date(f"{year}-01-01", f"{year+1}-01-01"))
-            )
-    BIOCLIM = {key: (ee.Image("projects/ee-sebasd1991/assets/BioClim")
-               .select(key)) for key in ee.Image("projects/ee-sebasd1991/assets/BioClim").bandNames().getInfo()}
+    era5 = ee.ImageCollection("ECMWF/ERA5_LAND/HOURLY").filter(
+        ee.Filter.date(f"{year}-01-01", f"{year + 1}-01-01")
+    )
+    BIOCLIM = {
+        key: (ee.Image("projects/ee-sebasd1991/assets/BioClim").select(key))
+        for key in ee.Image("projects/ee-sebasd1991/assets/BioClim")
+        .bandNames()
+        .getInfo()
+    }
     terrain = ee.Algorithms.Terrain(ee.Image("USGS/SRTMGL1_003"))
-    canopyHeight = ee.ImageCollection("projects/sat-io/open-datasets/facebook/meta-canopy-height").mosaic()
-    layer= {
-            "landcover" : ee.Image("COPERNICUS/CORINE/V20/100m/2018").select('landcover'),
-            "elevation" : ee.Image("USGS/SRTMGL1_003").select('elevation'),
-            "slope" : terrain.select('slope'),
-            "aspect" : terrain.select('aspect'),
-            "northness" : terrain.select('aspect').multiply(math.pi/180).cos().rename('northness'),
-            "eastness" : terrain.select('aspect').multiply(math.pi/180).sin().rename('eastness'),
-            "NDVI" : (
-                    ee.ImageCollection('LANDSAT/COMPOSITES/C02/T1_L2_8DAY_NDVI')
-                    .filterDate(f"{year}-01-01", f"{year+1}-01-01")
-                    .mean()
-                ),
-            "GHMI" : ee.ImageCollection("projects/sat-io/open-datasets/GHM/HM_2022_300M").first().rename('GHMI'),
-            "Trees" : canopyHeight.updateMask(canopyHeight.gte(1)).rename('Trees'),
-            "SWE" : era5.select(['snow_depth_water_equivalent'], ['swe']).mean().rename('SWE'),
-            "snow_depth" : era5.select(['snow_depth'], ['snow_depth']).mean(),
-            "snow_cover" : era5.select(['snow_cover'], ['snow_cover']).mean(),
-            "snow_albedo" : era5.select(['snow_albedo'], ['snow_albedo']).mean(),
-            "CHM" : canopyHeight.rename('CHM'),
-            "NARI" : gee_calculate_scrub_index('nari', year).rename('NARI'),
-            "NCRI" : gee_calculate_scrub_index('ncri', year).rename('NCRI')
-        }
+    canopyHeight = ee.ImageCollection(
+        "projects/sat-io/open-datasets/facebook/meta-canopy-height"
+    ).mosaic()
+    layer = {
+        "landcover": ee.Image("COPERNICUS/CORINE/V20/100m/2018").select("landcover"),
+        "elevation": ee.Image("USGS/SRTMGL1_003").select("elevation"),
+        "slope": terrain.select("slope"),
+        "aspect": terrain.select("aspect"),
+        "northness": terrain.select("aspect")
+        .multiply(math.pi / 180)
+        .cos()
+        .rename("northness"),
+        "eastness": terrain.select("aspect")
+        .multiply(math.pi / 180)
+        .sin()
+        .rename("eastness"),
+        "NDVI": (
+            ee.ImageCollection("LANDSAT/COMPOSITES/C02/T1_L2_8DAY_NDVI")
+            .filterDate(f"{year}-01-01", f"{year + 1}-01-01")
+            .mean()
+        ),
+        "GHMI": ee.ImageCollection("projects/sat-io/open-datasets/GHM/HM_2022_300M")
+        .first()
+        .rename("GHMI"),
+        "Trees": canopyHeight.updateMask(canopyHeight.gte(1)).rename("Trees"),
+        "SWE": era5.select(["snow_depth_water_equivalent"], ["swe"])
+        .mean()
+        .rename("SWE"),
+        "snow_depth": era5.select(["snow_depth"], ["snow_depth"]).mean(),
+        "snow_cover": era5.select(["snow_cover"], ["snow_cover"]).mean(),
+        "snow_albedo": era5.select(["snow_albedo"], ["snow_albedo"]).mean(),
+        "CHM": canopyHeight.rename("CHM"),
+        "NARI": gee_calculate_scrub_index("nari", year).rename("NARI"),
+        "NCRI": gee_calculate_scrub_index("ncri", year).rename("NCRI"),
+    }
     return {**layer, **BIOCLIM}
 
 
 def get_layer_visualization_params(layer_name: str):
     try:
-        paletteHM = ['#4c6100','#adda25','#e2ff9b','#ffff73','#ffe629','#ffd37f','#ffaa00','#e69808','#e60000','#a80000','#730000']
-        paletteTrees = ["#4A2354", '#fde725']
+        paletteHM = [
+            "#4c6100",
+            "#adda25",
+            "#e2ff9b",
+            "#ffff73",
+            "#ffe629",
+            "#ffd37f",
+            "#ffaa00",
+            "#e69808",
+            "#e60000",
+            "#a80000",
+            "#730000",
+        ]
+        paletteTrees = ["#4A2354", "#fde725"]
         vis_params = {
-            "elevation": {"min": 0, "max": 4000, "palette": geemap.colormaps.palettes['terrain']},
-            "slope": {"min": 0, "max": 60, "palette": geemap.colormaps.palettes['viridis']},
-            "NDVI": {"min": -1, "max": 1, "palette": geemap.colormaps.palettes['RdYlGn']},
-            "CHM": {"min": 0, "max": 25, "palette": geemap.colormaps.palettes['viridis']},
+            "elevation": {
+                "min": 0,
+                "max": 4000,
+                "palette": geemap.colormaps.palettes["terrain"],
+            },
+            "slope": {
+                "min": 0,
+                "max": 60,
+                "palette": geemap.colormaps.palettes["viridis"],
+            },
+            "NDVI": {
+                "min": -1,
+                "max": 1,
+                "palette": geemap.colormaps.palettes["RdYlGn"],
+            },
+            "CHM": {
+                "min": 0,
+                "max": 25,
+                "palette": geemap.colormaps.palettes["viridis"],
+            },
             "Trees": {"min": 1, "max": 1, "palette": paletteTrees},
-            "NARI": {"min": -1, "max": 1, "palette": geemap.colormaps.palettes['RdYlGn']},
-            "NCRI": {"min": -1, "max": 1, "palette": geemap.colormaps.palettes['RdYlGn']},
+            "NARI": {
+                "min": -1,
+                "max": 1,
+                "palette": geemap.colormaps.palettes["RdYlGn"],
+            },
+            "NCRI": {
+                "min": -1,
+                "max": 1,
+                "palette": geemap.colormaps.palettes["RdYlGn"],
+            },
             "GHMI": {"min": 0, "max": 1, "palette": paletteHM},
-            "SWE": {"min": 0, "max": 500, "palette": geemap.colormaps.palettes['Blues']},
-            "snow_depth": {"min": 0, "max": 200, "palette": geemap.colormaps.palettes['Blues']},
-            "snow_cover": {"min": 0, "max": 100, "palette": geemap.colormaps.palettes['Blues']},
-            "snow_albedo": {"min": 0, "max": 1, "palette": geemap.colormaps.palettes['Greys']},
-            "b1": {"min": -30, "max": 50, "palette": geemap.colormaps.palettes['viridis']},
-            "aspect": {"min": 0, "max": 360, "palette": geemap.colormaps.palettes['hsv']},
-            "northness": {"min": -1, "max": 1, "palette": geemap.colormaps.palettes['coolwarm']},
-            "eastness": {"min": -1, "max": 1, "palette": geemap.colormaps.palettes['coolwarm']}
+            "SWE": {
+                "min": 0,
+                "max": 500,
+                "palette": geemap.colormaps.palettes["Blues"],
+            },
+            "snow_depth": {
+                "min": 0,
+                "max": 200,
+                "palette": geemap.colormaps.palettes["Blues"],
+            },
+            "snow_cover": {
+                "min": 0,
+                "max": 100,
+                "palette": geemap.colormaps.palettes["Blues"],
+            },
+            "snow_albedo": {
+                "min": 0,
+                "max": 1,
+                "palette": geemap.colormaps.palettes["Greys"],
+            },
+            "b1": {
+                "min": -30,
+                "max": 50,
+                "palette": geemap.colormaps.palettes["viridis"],
+            },
+            "aspect": {
+                "min": 0,
+                "max": 360,
+                "palette": geemap.colormaps.palettes["hsv"],
+            },
+            "northness": {
+                "min": -1,
+                "max": 1,
+                "palette": geemap.colormaps.palettes["coolwarm"],
+            },
+            "eastness": {
+                "min": -1,
+                "max": 1,
+                "palette": geemap.colormaps.palettes["coolwarm"],
+            },
         }
         return vis_params.get(layer_name, {})
     except KeyError:
@@ -399,22 +484,29 @@ def plot_correlation_heatmap(dataframe, h_size=10, show_labels=False):
     correlation_matrix = dataframe.corr(method="spearman")
 
     # Create a heatmap
-    plt.figure(figsize=(h_size, h_size-2))
-    plt.imshow(correlation_matrix, cmap='coolwarm', interpolation='nearest')
+    plt.figure(figsize=(h_size, h_size - 2))
+    plt.imshow(correlation_matrix, cmap="coolwarm", interpolation="nearest")
 
     # Optionally display values on the heatmap
     if show_labels:
         for i in range(correlation_matrix.shape[0]):
             for j in range(correlation_matrix.shape[1]):
-                plt.text(j, i, f"{correlation_matrix.iloc[i, j]:.2f}",
-                         ha='center', va='center', color='white', fontsize=8)
+                plt.text(
+                    j,
+                    i,
+                    f"{correlation_matrix.iloc[i, j]:.2f}",
+                    ha="center",
+                    va="center",
+                    color="white",
+                    fontsize=8,
+                )
 
     columns = dataframe.columns.tolist()
     plt.xticks(range(len(columns)), columns, rotation=90)
     plt.yticks(range(len(columns)), columns)
     plt.title("Variables Correlation Matrix")
     plt.colorbar(label="Spearman Correlation")
-    plt.savefig('correlation_heatmap_plot.png')
+    plt.savefig("correlation_heatmap_plot.png")
     plt.show()
 
 
@@ -428,24 +520,40 @@ def load_background_data(path=r"./assets/background_data.csv"):
     Returns:
         gpd.GeoDataFrame: Returns a GeoDataFrame containing the background data.
     """
-    bg_df = pd.read_csv(path, sep=',')
-    s = bg_df['.geo'].astype(str).str.replace("'", '"').apply(json.loads)
+    bg_df = pd.read_csv(path, sep=",")
+    s = bg_df[".geo"].astype(str).str.replace("'", '"').apply(json.loads)
     geoms = s.apply(shapely.geometry.shape)
-    bg_gdf = gpd.GeoDataFrame(bg_df.drop(['.geo'], axis=1), geometry=geoms, crs='epsg:4326')
+    bg_gdf = gpd.GeoDataFrame(
+        bg_df.drop([".geo"], axis=1), geometry=geoms, crs="epsg:4326"
+    )
 
     return bg_gdf
 
 
-def get_species_features(_species_gdf: gpd.GeoDataFrame=None, features: list=None, _layer: dict=None):
+def get_species_features(
+    _species_gdf: gpd.GeoDataFrame = None, features: list = None, _layer: dict = None
+):
     if _layer is None and features is None:
         raise ValueError(" 'layer' and 'features' must be provided.")
     else:
         predictors = ee.Image.cat([_layer[feature] for feature in features])
-        presence_gdf = geemap.ee_to_gdf(predictors.sampleRegions(collection=geemap.gdf_to_ee(_species_gdf), geometries=True))
+        presence_gdf = geemap.ee_to_gdf(
+            predictors.sampleRegions(
+                collection=geemap.gdf_to_ee(_species_gdf), geometries=True
+            )
+        )
         return presence_gdf, predictors
 
 
-def compute_sdm(presence: gpd.GeoDataFrame=None, background: gpd.GeoDataFrame=None, features: list=None, model_type: str="Random Forest", n_trees: int=100, tree_depth: int=5, train_size: float=0.7):
+def compute_sdm(
+    presence: gpd.GeoDataFrame = None,
+    background: gpd.GeoDataFrame = None,
+    features: list = None,
+    model_type: str = "Random Forest",
+    n_trees: int = 100,
+    tree_depth: int = 5,
+    train_size: float = 0.7,
+):
     """_summary_
 
     Parameters
@@ -471,7 +579,14 @@ def compute_sdm(presence: gpd.GeoDataFrame=None, background: gpd.GeoDataFrame=No
         _description_
     """
     from sklearn.metrics import r2_score, roc_auc_score
-    from sklearn.model_selection import train_test_split, KFold, StratifiedKFold, StratifiedShuffleSplit, cross_val_score, GridSearchCV
+    from sklearn.model_selection import (
+        train_test_split,
+        KFold,
+        StratifiedKFold,
+        StratifiedShuffleSplit,
+        cross_val_score,
+        GridSearchCV,
+    )
     from sklearn.feature_selection import RFE, RFECV, SelectFromModel
     from sklearn.inspection import PartialDependenceDisplay, permutation_importance
 
@@ -479,18 +594,27 @@ def compute_sdm(presence: gpd.GeoDataFrame=None, background: gpd.GeoDataFrame=No
     #     background_gdf = load_background_data()[features+['geometry']]
     # else:
     #     background_gdf = load_background_data()[features+['geometry']].sample(n=species_gdf.shape[0], axis=0)
-    translation_dict = {f'b{i+1}':f'BIO{(i+1):02d}' for i in range(19)} | {'elevation':'Geländehöhe', 'slope':'Hangneigung', 'aspect':'Exposition', 'landcover':'CLC', 'snow_cover':'Schneebedeckung', 'snow_depth':'Schneetiefe'}
+    translation_dict = {f"b{i + 1}": f"BIO{(i + 1):02d}" for i in range(19)} | {
+        "elevation": "Geländehöhe",
+        "slope": "Hangneigung",
+        "aspect": "Exposition",
+        "landcover": "CLC",
+        "snow_cover": "Schneebedeckung",
+        "snow_depth": "Schneetiefe",
+    }
 
-    background = background[features+['geometry']].copy().sample(n=presence.shape[0], axis=0)
+    background = (
+        background[features + ["geometry"]].copy().sample(n=presence.shape[0], axis=0)
+    )
 
-    background['PresAbs'] = 0
-    presence['PresAbs'] = 1
+    background["PresAbs"] = 0
+    presence["PresAbs"] = 1
     presence = presence[background.columns]
 
     ml_gdf = pd.concat([background, presence], axis=0).reset_index(drop=True)
-    ml_gdf.columns = [_.replace(' ','_') for _ in ml_gdf.columns]
+    ml_gdf.columns = [_.replace(" ", "_") for _ in ml_gdf.columns]
 
-    y = ml_gdf['PresAbs']
+    y = ml_gdf["PresAbs"]
     X = ml_gdf[features]
 
     match model_type:
@@ -498,15 +622,32 @@ def compute_sdm(presence: gpd.GeoDataFrame=None, background: gpd.GeoDataFrame=No
             results = []
 
             for i in range(10):
-                X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=train_size, stratify=y, shuffle=True)
-                model = RandomForestClassifier(n_estimators=n_trees, max_samples=0.8, min_samples_leaf=.1,
-                                               verbose=0, class_weight='balanced', max_depth=tree_depth)
+                X_train, X_test, y_train, y_test = train_test_split(
+                    X, y, test_size=train_size, stratify=y, shuffle=True
+                )
+                model = RandomForestClassifier(
+                    n_estimators=n_trees,
+                    max_samples=0.8,
+                    min_samples_leaf=0.1,
+                    verbose=0,
+                    class_weight="balanced",
+                    max_depth=tree_depth,
+                )
                 model.fit(X_train, y_train)
-                results.append([roc_auc_score(y_test, model.predict_proba(X_test)[:,1])] + model.feature_importances_.tolist())
+                results.append(
+                    [roc_auc_score(y_test, model.predict_proba(X_test)[:, 1])]
+                    + model.feature_importances_.tolist()
+                )
 
-            results_df = pd.DataFrame(results, columns=['roc_auc'] + X.columns.tolist())
+            results_df = pd.DataFrame(results, columns=["roc_auc"] + X.columns.tolist())
 
-            mdi_importances = pd.Series(model.feature_importances_, index=[translation_dict.get(key) if key in translation_dict.keys() else key for key in X[features].columns.tolist()])
+            mdi_importances = pd.Series(
+                model.feature_importances_,
+                index=[
+                    translation_dict.get(key) if key in translation_dict.keys() else key
+                    for key in X[features].columns.tolist()
+                ],
+            )
             tree_importance_sorted_idx = np.argsort(model.feature_importances_)
 
             fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 8), dpi=500)
@@ -524,17 +665,17 @@ def compute_sdm(presence: gpd.GeoDataFrame=None, background: gpd.GeoDataFrame=No
             results_df = pd.DataFrame()
         case "Embedding":
             model = "Embedding"
-            embeddings = ee.ImageCollection('GOOGLE/SATELLITE_EMBEDDING/V1/ANNUAL');
-            mosaic = (embeddings
-                .filter(ee.Filter.date('2024-01-01', '2025-01-01'))
-                .mosaic())
+            embeddings = ee.ImageCollection("GOOGLE/SATELLITE_EMBEDDING/V1/ANNUAL")
+            mosaic = embeddings.filter(
+                ee.Filter.date("2024-01-01", "2025-01-01")
+            ).mosaic()
             results_df = pd.DataFrame()
             # results_df = mosaic.sampleRegions(
             #     collection= geemap.gdf_to_ee(ml_gdf),
             #     properties = ['PresAbs'],
             #     scale= 30
             # )
-    #partial dependence
+    # partial dependence
     # from sklearn.inspection import PartialDependenceDisplay, permutation_importance
 
     # # fig, ax = plt.subplots(figsize=(12, 8))
@@ -552,8 +693,15 @@ def classify_image_aoi(image, aoi, ml_gdf, model, features):
     #     del st.session_state.classified_img_pr
     fc = geemap.gdf_to_ee(ml_gdf)
     seed = random.randint(1, 1000)
-    tr_presence_points = fc.filter(ee.Filter.eq('PresAbs', 1)).randomColumn(seed=seed).sort("random")
-    tr_pseudo_abs_points = fc.filter(ee.Filter.eq('PresAbs', 0)).randomColumn(seed=seed).sort("random").limit(tr_presence_points.size().getInfo())
+    tr_presence_points = (
+        fc.filter(ee.Filter.eq("PresAbs", 1)).randomColumn(seed=seed).sort("random")
+    )
+    tr_pseudo_abs_points = (
+        fc.filter(ee.Filter.eq("PresAbs", 0))
+        .randomColumn(seed=seed)
+        .sort("random")
+        .limit(tr_presence_points.size().getInfo())
+    )
     train_pvals = tr_presence_points.merge(tr_pseudo_abs_points)
     if isinstance(model, RandomForestClassifier):
         # Random Forest classifier
@@ -563,36 +711,34 @@ def classify_image_aoi(image, aoi, ml_gdf, model, features):
             maxNodes=model.max_depth,
             # shrinkage=0.1, # gradient
             # variablesPerSplit=None,
-            minLeafPopulation=round(train_pvals.size().getInfo()*.1, 0),  # rf
+            minLeafPopulation=round(train_pvals.size().getInfo() * 0.1, 0),  # rf
             bagFraction=0.8,  # rf
         )
         classifier_pr = classifier.setOutputMode("PROBABILITY").train(
             train_pvals, "PresAbs", features
         )
-        classified_img_pr = image.reproject(crs='EPSG:4326', scale=30).clip(aoi).classify(classifier_pr)
+        classified_img_pr = (
+            image.reproject(crs="EPSG:4326", scale=30).clip(aoi).classify(classifier_pr)
+        )
         return classified_img_pr
 
     if model == "Maxent":
         classifier = ee.Classifier.amnhMaxent()
 
         # Presence probability: Habitat suitability map
-        classifier_pr = classifier.train(
-            train_pvals, "PresAbs", features
+        classifier_pr = classifier.train(train_pvals, "PresAbs", features)
+        classified_img_pr = (
+            image.reproject(crs="EPSG:4326", scale=30).clip(aoi).classify(classifier_pr)
         )
-        classified_img_pr = image.reproject(crs='EPSG:4326', scale=30).clip(aoi).classify(classifier_pr)
-        return classified_img_pr.select('probability')
+        return classified_img_pr.select("probability")
     if model == "Embedding":
-        embeddings = ee.ImageCollection('GOOGLE/SATELLITE_EMBEDDING/V1/ANNUAL');
-        mosaic = (embeddings
-                .filter(ee.Filter.date('2024-01-01', '2025-01-01'))
-                .mosaic())
+        embeddings = ee.ImageCollection("GOOGLE/SATELLITE_EMBEDDING/V1/ANNUAL")
+        mosaic = embeddings.filter(ee.Filter.date("2024-01-01", "2025-01-01")).mosaic()
         sampleEmbeddings = mosaic.sampleRegions(
-                collection=geemap.gdf_to_ee(ml_gdf),
-                properties=['PresAbs'],
-                scale=30
-            )
-        tr_presence_points = sampleEmbeddings.filter(ee.Filter.eq('PresAbs', 1))
-        tr_pseudo_abs_points = sampleEmbeddings.filter(ee.Filter.eq('PresAbs', 0))
+            collection=geemap.gdf_to_ee(ml_gdf), properties=["PresAbs"], scale=30
+        )
+        tr_presence_points = sampleEmbeddings.filter(ee.Filter.eq("PresAbs", 1))
+        tr_pseudo_abs_points = sampleEmbeddings.filter(ee.Filter.eq("PresAbs", 0))
         train_pvals = tr_presence_points.merge(tr_pseudo_abs_points)
 
         # Random Forest classifier
@@ -602,8 +748,8 @@ def classify_image_aoi(image, aoi, ml_gdf, model, features):
             maxNodes=5,
             # shrinkage=0.1, # gradient
             # variablesPerSplit=None,
-            minLeafPopulation=round(train_pvals.size().getInfo()*.1, 0),#rf
-            bagFraction=0.8, # rf
+            minLeafPopulation=round(train_pvals.size().getInfo() * 0.1, 0),  # rf
+            bagFraction=0.8,  # rf
         )
         # Presence probability: Habitat suitability map
         classifier_pr = classifier.setOutputMode("PROBABILITY").train(
@@ -619,7 +765,7 @@ def plot_hier_clustering(dataframe):
     from scipy.stats import spearmanr
     from collections import defaultdict
 
-    X = dataframe.copy().drop('geometry', axis=1)
+    X = dataframe.copy().drop("geometry", axis=1)
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 8))
     corr = spearmanr(X).correlation
 
@@ -643,7 +789,7 @@ def plot_hier_clustering(dataframe):
     ax2.set_yticklabels(dendro["ivl"])
     _ = fig.tight_layout()
 
-    cluster_ids = hierarchy.fcluster(dist_linkage, .35, criterion="distance")
+    cluster_ids = hierarchy.fcluster(dist_linkage, 0.35, criterion="distance")
     cluster_id_to_feature_ids = defaultdict(list)
     for idx, cluster_id in enumerate(cluster_ids):
         cluster_id_to_feature_ids[cluster_id].append(idx)
@@ -673,12 +819,22 @@ def load_map_layer(layers, country_code):
     Map.add_basemap("SATELLITE")
     for key, value in st.session_state.layer.items():
         if key in layers:
-            Map.addLayer(value.clip(st.session_state.country_aoi), get_layer_visualization_params(key), key, opacity=.5)
-            Map.addLayer(ee.Image().byte().paint(
-                featureCollection=st.session_state.country_aoi,
-                color=1, width=2),
-                         {'palette': 'FF0000'}, "Country AOI",
-                         opacity=1)
+            Map.addLayer(
+                value.clip(st.session_state.country_aoi),
+                get_layer_visualization_params(key),
+                key,
+                opacity=0.5,
+            )
+            Map.addLayer(
+                ee.Image()
+                .byte()
+                .paint(
+                    featureCollection=st.session_state.country_aoi, color=1, width=2
+                ),
+                {"palette": "FF0000"},
+                "Country AOI",
+                opacity=1,
+            )
             Map.centerObject(st.session_state.country_aoi, 6)
 
     return Map
