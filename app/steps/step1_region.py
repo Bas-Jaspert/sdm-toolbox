@@ -17,9 +17,31 @@ from app.state import AppState
 # ---------------------------------------------------------------------------
 
 COUNTRY_OPTIONS: list[str] = [
-    "AT", "DE", "CH", "FR", "IT", "ES", "PL", "CZ", "HU", "RO",
-    "SE", "NO", "FI", "DK", "NL", "BE", "PT", "GR", "HR", "SK",
-    "SI", "BG", "LT", "LV", "EE",
+    "AT",
+    "DE",
+    "CH",
+    "FR",
+    "IT",
+    "ES",
+    "PL",
+    "CZ",
+    "HU",
+    "RO",
+    "SE",
+    "NO",
+    "FI",
+    "DK",
+    "NL",
+    "BE",
+    "PT",
+    "GR",
+    "HR",
+    "SK",
+    "SI",
+    "BG",
+    "LT",
+    "LV",
+    "EE",
 ]
 
 _ASSETS = Path(__file__).resolve().parent.parent.parent / "assets"
@@ -41,6 +63,7 @@ def _nuts2_options_for_country(country_code: str) -> dict[str, str]:
 # ---------------------------------------------------------------------------
 # Render
 # ---------------------------------------------------------------------------
+
 
 def render(state: AppState, on_next: Callable) -> None:
     """Render Step 1: Region & Species.
@@ -131,7 +154,13 @@ def render(state: AppState, on_next: Callable) -> None:
 
     def _on_year_change(e) -> None:
         try:
-            state.year = int(e.value)
+            state.year_start = int(e.value)
+        except (TypeError, ValueError):
+            pass
+
+    def _on_year_end_change(e) -> None:
+        try:
+            state.year_end = int(e.value)
         except (TypeError, ValueError):
             pass
 
@@ -148,7 +177,6 @@ def render(state: AppState, on_next: Callable) -> None:
         ui.label("Step 1 — Region & Species").classes("text-xl font-bold mb-4")
 
         with ui.column().classes("w-full gap-4"):
-
             # 1. Species input
             species_input = ui.input(
                 label="Species name",
@@ -189,15 +217,24 @@ def render(state: AppState, on_next: Callable) -> None:
             ).classes("w-full")
             _county_select_ref.append(county_select)
 
-            # 4. Year selector
-            ui.number(
-                label="Year",
-                value=state.year,
-                min=2015,
-                max=2024,
-                step=1,
-                on_change=_on_year_change,
-            ).classes("w-full")
+            # 4. Year range selector
+            with ui.row().classes("w-full gap-4"):
+                ui.number(
+                    label="Year from",
+                    value=state.year_start,
+                    min=2000,
+                    max=2025,
+                    step=1,
+                    on_change=_on_year_change,
+                ).classes("w-full")
+                ui.number(
+                    label="Year to",
+                    value=state.year_end,
+                    min=2000,
+                    max=2025,
+                    step=1,
+                    on_change=_on_year_end_change,
+                ).classes("w-full")
 
             # 5. Next button — disabled until required fields are filled
             next_btn = ui.button(

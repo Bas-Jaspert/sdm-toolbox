@@ -17,7 +17,7 @@ from app.services import sdm_service
 _PIPELINE_LABELS: dict[str, str] = {
     "embedding": "Embedding dot-product pipeline",
     "gee": "GEE-native pipeline (server-side, fast)",
-    "local": "sklearn pipeline (local, thorough)",
+    "local": "Local sklearn pipeline (Deep Dive, downloads features)",
 }
 
 _GEE_STEPS: list[str] = [
@@ -29,9 +29,8 @@ _GEE_STEPS: list[str] = [
 
 _LOCAL_STEPS: list[str] = [
     "Loading AOI...",
-    "Extracting features (downloading)...",
-    "Training model...",
-    "Running 10-fold cross-validation...",
+    "Extracting features...",
+    "Training local model...",
     "Classifying AOI...",
 ]
 
@@ -50,27 +49,29 @@ _LOW_ACCURACY_THRESHOLD = 0.7
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _get_pipeline_key(state: AppState) -> str:
-    """Return the pipeline key ('embedding', 'gee', or 'local') for *state*."""
+    """Return the pipeline key ('embedding', 'local', or 'gee') for *state*."""
     if state.model_type == "embedding":
         return "embedding"
-    if state.data_mode in ("explore", "own"):
-        return "gee"
-    return "local"
+    if state.data_mode == "deepdive":
+        return "local"
+    return "gee"
 
 
 def _get_steps(pipeline_key: str) -> list[str]:
     """Return the progress step labels for *pipeline_key*."""
     if pipeline_key == "embedding":
         return _EMBEDDING_STEPS
-    if pipeline_key == "gee":
-        return _GEE_STEPS
-    return _LOCAL_STEPS
+    if pipeline_key == "local":
+        return _LOCAL_STEPS
+    return _GEE_STEPS
 
 
 # ---------------------------------------------------------------------------
 # Render
 # ---------------------------------------------------------------------------
+
 
 def render(state: AppState, on_next: Callable, on_back: Callable) -> None:
     """Render Step 4: Run SDM.
@@ -160,10 +161,10 @@ def render(state: AppState, on_next: Callable, on_back: Callable) -> None:
             # Select the appropriate service call
             if pipeline_key == "embedding":
                 service_fn = lambda: sdm_service.run_embedding(state)  # noqa: E731
-            elif pipeline_key == "gee":
-                service_fn = lambda: sdm_service.run_gee(state)  # noqa: E731
-            else:
+            elif pipeline_key == "local":
                 service_fn = lambda: sdm_service.run_local(state)  # noqa: E731
+            else:
+                service_fn = lambda: sdm_service.run_gee(state)  # noqa: E731
 
             # Run computation and progress simulation concurrently
             compute_task = loop.run_in_executor(None, service_fn)
@@ -172,6 +173,9 @@ def render(state: AppState, on_next: Callable, on_back: Callable) -> None:
             try:
                 await compute_task
             except Exception as exc:  # noqa: BLE001
+                import traceback
+
+                traceback.print_exc()
                 progress_task.cancel()
                 if _status_label_ref:
                     _status_label_ref[0].set_text(f"Error: {exc}")
@@ -209,7 +213,6 @@ def render(state: AppState, on_next: Callable, on_back: Callable) -> None:
         ui.label("Step 4 — Run SDM").classes("text-xl font-bold mb-4")
 
         with ui.column().classes("w-full gap-4"):
-
             # 1. Pipeline info label
             ui.label(f"Pipeline: {pipeline_label}").classes(
                 "text-sm text-gray-600 italic"

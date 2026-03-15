@@ -390,7 +390,7 @@ def get_layer_visualization_params(layer_name: str):
             "eastness": {"min": -1, "max": 1, "palette": geemap.colormaps.palettes['coolwarm']}
         }
         return vis_params.get(layer_name, {})
-    except:
+    except KeyError:
         return {}
 
 

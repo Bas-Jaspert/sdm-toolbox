@@ -5,11 +5,12 @@ from __future__ import annotations
 from typing import Callable
 
 import ee
+import folium
 import matplotlib
-matplotlib.use('Agg')
+
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import geemap
-import geemap.foliumap as geemap_folium
 from nicegui import ui
 
 from app.map_server import make_iframe, set_iframe_map
@@ -19,34 +20,62 @@ from app.state import AppState
 # Internal helpers
 # ---------------------------------------------------------------------------
 
+
 def _build_map_html(state: AppState) -> str:
     """Return standalone folium HTML for the habitat suitability map, or '' on failure."""
-    import folium
     try:
         if state.classified_img is None:
             return ""
-        Map = geemap_folium.Map()
-        Map.addLayer(
-            state.classified_img,
-            {
-                "min": 0, "max": 1,
-                "palette": [
-                    "#313695", "#4575b4", "#74add1", "#abd9e9",
-                    "#ffffbf",
-                    "#fee090", "#fdae61", "#f46d43", "#a50026",
-                ],
-            },
-            "Habitat Suitability",
-        )
+
+        # Derive map centre from presence points, fall back to world view.
         if state.species_gdf is not None and not state.species_gdf.empty:
-            Map.addLayer(
-                geemap.gdf_to_ee(state.species_gdf),
-                {"color": "red"},
-                "Presence Points",
-            )
-        return Map.get_root().render()
+            bounds = state.species_gdf.total_bounds
+            center = [(bounds[1] + bounds[3]) / 2, (bounds[0] + bounds[2]) / 2]
+        else:
+            center = [20, 0]
+
+        fmap = folium.Map(location=center, zoom_start=6)
+
+        # Add GEE layer via tile URL — avoids geemap.foliumap import.
+        vis_params = {
+            "min": 0,
+            "max": 1,
+            "palette": [
+                "#313695",
+                "#4575b4",
+                "#74add1",
+                "#abd9e9",
+                "#ffffbf",
+                "#fee090",
+                "#fdae61",
+                "#f46d43",
+                "#a50026",
+            ],
+        }
+        map_id = state.classified_img.getMapId(vis_params)
+        folium.TileLayer(
+            tiles=map_id["tile_fetcher"].url_format,
+            attr="Google Earth Engine",
+            name="Habitat Suitability",
+            overlay=True,
+        ).add_to(fmap)
+
+        if state.species_gdf is not None and not state.species_gdf.empty:
+            for _, row in state.species_gdf.iterrows():
+                folium.CircleMarker(
+                    location=[row.geometry.y, row.geometry.x],
+                    radius=4,
+                    color="#e74c3c",
+                    fill=True,
+                    fill_color="#e74c3c",
+                    fill_opacity=0.7,
+                    weight=1,
+                ).add_to(fmap)
+            fmap.fit_bounds([[bounds[1], bounds[0]], [bounds[3], bounds[2]]])
+
+        return fmap.get_root().render()
     except Exception:
-        # Fallback: plain folium map with presence points only
+        # Fallback: presence points only (no GEE layer).
         if state.species_gdf is None or state.species_gdf.empty:
             return ""
         try:
@@ -57,8 +86,12 @@ def _build_map_html(state: AppState) -> str:
             for _, row in state.species_gdf.iterrows():
                 folium.CircleMarker(
                     location=[row.geometry.y, row.geometry.x],
-                    radius=4, color="#e74c3c", fill=True,
-                    fill_color="#e74c3c", fill_opacity=0.7, weight=1,
+                    radius=4,
+                    color="#e74c3c",
+                    fill=True,
+                    fill_color="#e74c3c",
+                    fill_opacity=0.7,
+                    weight=1,
                 ).add_to(fmap)
             fmap.fit_bounds([[bounds[1], bounds[0]], [bounds[3], bounds[2]]])
             return fmap.get_root().render()
@@ -96,6 +129,7 @@ def _make_feature_importance_fig(state: AppState) -> plt.Figure:
 # Render
 # ---------------------------------------------------------------------------
 
+
 def render(state: AppState, on_back: Callable) -> None:
     """Render Step 5: Results & Export.
 
@@ -112,6 +146,7 @@ def render(state: AppState, on_back: Callable) -> None:
     _export_status_ref: list[ui.label] = []
     _whatif_offset_inputs: dict[str, list[ui.number]] = {}
     _reclassify_status_ref: list[ui.label] = []
+    _reclassify_progress_ref: list[ui.linear_progress] = []
 
     # ------------------------------------------------------------------
     # Helpers
@@ -126,14 +161,18 @@ def render(state: AppState, on_back: Callable) -> None:
         """Start a GEE export task to Google Drive (non-blocking: just submits the task)."""
         if state.classified_img is None:
             if _export_status_ref:
-                _export_status_ref[0].set_text("No classified image available to export.")
+                _export_status_ref[0].set_text(
+                    "No classified image available to export."
+                )
                 _export_status_ref[0].set_visibility(True)
             return
 
         async def _run() -> None:
             import asyncio
+
             loop = asyncio.get_event_loop()
             try:
+
                 def _start_export():
                     task = ee.batch.Export.image.toDrive(
                         image=state.classified_img,
@@ -143,6 +182,7 @@ def render(state: AppState, on_back: Callable) -> None:
                     )
                     task.start()
                     return "Export started. Check Google Earth Engine Tasks tab."
+
                 msg = await loop.run_in_executor(None, _start_export)
             except Exception as exc:  # noqa: BLE001
                 msg = f"Export failed: {exc}"
@@ -151,6 +191,7 @@ def render(state: AppState, on_back: Callable) -> None:
                 _export_status_ref[0].set_visibility(True)
 
         import asyncio
+
         asyncio.ensure_future(_run())
 
     def _reclassify() -> None:
@@ -181,8 +222,17 @@ def render(state: AppState, on_back: Callable) -> None:
                 _reclassify_status_ref[0].set_visibility(True)
             return
 
+        # Show progress
+        if _reclassify_progress_ref:
+            _reclassify_progress_ref[0].set_visibility(True)
+            _reclassify_progress_ref[0].value = 0.0
+        if _reclassify_status_ref:
+            _reclassify_status_ref[0].set_text("Re-classifying...")
+            _reclassify_status_ref[0].set_visibility(True)
+
         async def _run() -> None:
             import asyncio
+
             loop = asyncio.get_event_loop()
 
             # Read current offset values from inputs
@@ -196,14 +246,19 @@ def render(state: AppState, on_back: Callable) -> None:
             try:
                 from toolbox.utils import classify_image_aoi, get_aoi_from_nuts
 
+                if _reclassify_progress_ref:
+                    _reclassify_progress_ref[0].value = 0.3
+
                 def _do_reclassify():
-                    modified_predictors = ee.Image.cat([
-                        state.layer_stack[k].add(
-                            ee.Image.constant(state.whatif_offsets.get(k, 0.0))
-                        )
-                        for k in state.selected_layers
-                        if k in state.layer_stack
-                    ])
+                    modified_predictors = ee.Image.cat(
+                        [
+                            state.layer_stack[k].add(
+                                ee.Image.constant(state.whatif_offsets.get(k, 0.0))
+                            )
+                            for k in state.selected_layers
+                            if k in state.layer_stack
+                        ]
+                    )
                     country_aoi, county_aoi = get_aoi_from_nuts(
                         country_code=state.country_code,
                         county_name=state.county_name or None,
@@ -217,20 +272,34 @@ def render(state: AppState, on_back: Callable) -> None:
                         state.selected_layers,
                     )
 
+                if _reclassify_progress_ref:
+                    _reclassify_progress_ref[0].value = 0.5
+
                 new_img = await loop.run_in_executor(None, _do_reclassify)
+
+                if _reclassify_progress_ref:
+                    _reclassify_progress_ref[0].value = 0.8
+
                 state.classified_img = new_img
                 html = _build_map_html(state)
                 _refresh_map(html)
+
+                if _reclassify_progress_ref:
+                    _reclassify_progress_ref[0].value = 1.0
+                    _reclassify_progress_ref[0].set_visibility(False)
                 if _reclassify_status_ref:
                     _reclassify_status_ref[0].set_text("Re-classification complete.")
-                    _reclassify_status_ref[0].set_visibility(True)
 
             except Exception as exc:  # noqa: BLE001
+                if _reclassify_progress_ref:
+                    _reclassify_progress_ref[0].set_visibility(False)
                 if _reclassify_status_ref:
-                    _reclassify_status_ref[0].set_text(f"Re-classification failed: {exc}")
-                    _reclassify_status_ref[0].set_visibility(True)
+                    _reclassify_status_ref[0].set_text(
+                        f"Re-classification failed: {exc}"
+                    )
 
         import asyncio
+
         asyncio.ensure_future(_run())
 
     # ------------------------------------------------------------------
@@ -240,7 +309,6 @@ def render(state: AppState, on_back: Callable) -> None:
         ui.label("Step 5 — Results & Export").classes("text-xl font-bold mb-4")
 
         with ui.column().classes("w-full gap-6"):
-
             # 1. Folium map
             map_iframe = make_iframe(height="520px")
             _map_iframe_ref.append(map_iframe)
@@ -259,11 +327,14 @@ def render(state: AppState, on_back: Callable) -> None:
                 )
                 fig = _make_feature_importance_fig(state)
                 import io, base64
+
                 buf = io.BytesIO()
                 fig.savefig(buf, format="png", bbox_inches="tight")
                 buf.seek(0)
                 b64 = base64.b64encode(buf.read()).decode()
-                ui.html(f'<img src="data:image/png;base64,{b64}" style="width:100%">').classes("w-full")
+                ui.html(
+                    f'<img src="data:image/png;base64,{b64}" style="width:100%">'
+                ).classes("w-full")
                 plt.close(fig)
 
             # 3. What-If panel
@@ -281,9 +352,12 @@ def render(state: AppState, on_back: Callable) -> None:
                             def _make_offset_handler(lyr: str):
                                 def _handler(e) -> None:
                                     try:
-                                        state.whatif_offsets[lyr] = float(e.value or 0.0)
+                                        state.whatif_offsets[lyr] = float(
+                                            e.value or 0.0
+                                        )
                                     except (TypeError, ValueError):
                                         state.whatif_offsets[lyr] = 0.0
+
                                 return _handler
 
                             num = ui.number(
@@ -301,6 +375,12 @@ def render(state: AppState, on_back: Callable) -> None:
                     reclassify_status = ui.label("").classes("text-sm text-amber-700")
                     reclassify_status.set_visibility(False)
                     _reclassify_status_ref.append(reclassify_status)
+
+                    reclassify_progress = ui.linear_progress(value=0.0).classes(
+                        "w-full"
+                    )
+                    reclassify_progress.set_visibility(False)
+                    _reclassify_progress_ref.append(reclassify_progress)
 
                     ui.button("Re-classify", on_click=_reclassify).classes("mt-2")
 

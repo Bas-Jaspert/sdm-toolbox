@@ -12,8 +12,10 @@ import base64
 from nicegui import ui
 
 
-def folium_to_b64(html: str) -> str:
+def folium_to_b64(html) -> str:
     """Return base64-encoded folium HTML for use as a data URL src."""
+    if not isinstance(html, str):
+        raise ValueError(f"Expected string, got {type(html).__name__}")
     return base64.b64encode(html.encode("utf-8")).decode()
 
 

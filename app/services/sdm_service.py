@@ -8,9 +8,9 @@ Provides three SDM pipeline functions:
 """
 
 from pathlib import Path
-_ASSETS = Path(__file__).resolve().parent.parent.parent / "assets"
-_BG_PATH = str(_ASSETS / "background_data.csv")
+from typing import Optional
 
+import geopandas as gpd
 from app.state import AppState
 from toolbox.utils import (
     get_aoi_from_nuts,
@@ -23,6 +23,19 @@ import geemap
 import ee
 import pandas as pd
 from sklearn.metrics import roc_auc_score
+
+_BG_PATH: Path = Path(__file__).parents[2] / "assets" / "background_data.csv"
+
+
+def _cleanup_gdf_for_gee(gdf: Optional[gpd.GeoDataFrame]) -> Optional[gpd.GeoDataFrame]:
+    """Convert non-geometry columns to strings for GeoJSON/EE compatibility."""
+    if gdf is None or gdf.empty:
+        return gdf
+    for col in gdf.columns:
+        if col == "geometry":
+            continue
+        gdf[col] = gdf[col].apply(lambda x: str(x) if pd.notna(x) else None)
+    return gdf
 
 
 def run_gee(state: AppState) -> AppState:
@@ -55,21 +68,21 @@ def run_gee(state: AppState) -> AppState:
         )
         aoi = county_aoi if county_aoi is not None else country_aoi
 
+        # 1b. Clean up species_gdf for GeoJSON compatibility
+        state.species_gdf = _cleanup_gdf_for_gee(state.species_gdf)
+
         # 2. Convert species GeoDataFrame to EE FeatureCollection
         presence_fc = geemap.gdf_to_ee(state.species_gdf)
 
-        # 3. Load background data and sample same N as presences
-        background_gdf = load_background_data(path=_BG_PATH)
+        # 3. Sample background points in GEE within the AOI (1:1 ratio)
         n_presence = state.species_gdf.shape[0]
-        background_gdf = background_gdf.sample(
-            n=min(n_presence, len(background_gdf)), axis=0
+        background_fc = ee.FeatureCollection.randomPoints(
+            region=aoi,
+            points=n_presence,
         )
-        background_fc = geemap.gdf_to_ee(background_gdf)
 
         # 4. Stack predictor layers
-        predictors = ee.Image.cat(
-            [state.layer_stack[k] for k in state.selected_layers]
-        )
+        predictors = ee.Image.cat([state.layer_stack[k] for k in state.selected_layers])
 
         # 5. Sample features at presence and background points (server-side)
         presence_samples = predictors.sampleRegions(
@@ -84,12 +97,8 @@ def run_gee(state: AppState) -> AppState:
         )
 
         # 6. Add PresAbs property (1 for presence, 0 for background)
-        presence_samples = presence_samples.map(
-            lambda f: f.set("PresAbs", 1)
-        )
-        background_samples = background_samples.map(
-            lambda f: f.set("PresAbs", 0)
-        )
+        presence_samples = presence_samples.map(lambda f: f.set("PresAbs", 1))
+        background_samples = background_samples.map(lambda f: f.set("PresAbs", 0))
         train_fc = presence_samples.merge(background_samples)
 
         # 7. Train in CLASSIFICATION mode so errorMatrix gets discrete labels
@@ -147,9 +156,7 @@ def run_gee(state: AppState) -> AppState:
         state.results_df = pd.DataFrame(results_data)
 
     except Exception as e:
-        raise RuntimeError(
-            f"GEE SDM pipeline failed: {str(e)}"
-        ) from e
+        raise RuntimeError(f"GEE SDM pipeline failed: {str(e)}") from e
 
     return state
 
@@ -229,9 +236,7 @@ def run_local(state: AppState) -> AppState:
         state.ml_gdf = ml_gdf
 
     except Exception as e:
-        raise RuntimeError(
-            f"Local (sklearn) SDM pipeline failed: {str(e)}"
-        ) from e
+        raise RuntimeError(f"Local (sklearn) SDM pipeline failed: {str(e)}") from e
 
     return state
 
@@ -261,14 +266,30 @@ def run_embedding(state: AppState) -> AppState:
         If the embedding SDM pipeline fails for any reason.
     """
     try:
-        # 1. Load annual embedding mosaic for state.year
+        # 1. Load annual embedding mosaic for state.year_start
+        # Use year_start if in valid range, otherwise fall back to latest (2023)
         embeddings = ee.ImageCollection("GOOGLE/SATELLITE_EMBEDDING/V1/ANNUAL")
+
+        selected_year = state.year_start
+        if selected_year < 2015 or selected_year > 2023:
+            selected_year = 2023  # Fallback to latest available
+
         mosaic = embeddings.filter(
-            ee.Filter.date(f"{state.year}-01-01", f"{state.year + 1}-01-01")
+            ee.Filter.date(f"{selected_year}-01-01", f"{selected_year + 1}-01-01")
         ).mosaic()
+
+        # 2a. Clean up species_gdf for GeoJSON compatibility
+        state.species_gdf = _cleanup_gdf_for_gee(state.species_gdf)
 
         # 2. Convert species GeoDataFrame to EE FeatureCollection
         presence_fc = geemap.gdf_to_ee(state.species_gdf)
+        n_presence = state.species_gdf.shape[0]
+
+        # 2b. Get AOI for sampling
+        country_aoi, county_aoi = get_aoi_from_nuts(
+            state.country_code, state.county_name or None
+        )
+        aoi = county_aoi if county_aoi is not None else country_aoi
 
         # 3. Sample embedding vectors at all presence points
         presence_samples = mosaic.sampleRegions(
@@ -298,18 +319,15 @@ def run_embedding(state: AppState) -> AppState:
             mosaic_norm.max(ee.Image.constant(1e-9))
         )
 
-        # 8. Sample dot product scores at a small set of presence + background points
-        background_gdf = load_background_data(path=_BG_PATH)
-        n_sample = 100
-        background_sample_gdf = background_gdf.sample(
-            n=min(n_sample, len(background_gdf)), axis=0
-        )
-        presence_sample_gdf = state.species_gdf.sample(
-            n=min(n_sample, len(state.species_gdf)), axis=0
-        )
+        # 8. Sample dot product scores at presence + background points in GEE
+        n_sample = min(100, n_presence)  # Use up to 100 points for AUC eval
 
-        presence_sample_fc = geemap.gdf_to_ee(presence_sample_gdf)
-        background_sample_fc = geemap.gdf_to_ee(background_sample_gdf)
+        presence_sample_fc = presence_fc.randomColumn().limit(n_sample, "random")
+
+        background_sample_fc = ee.FeatureCollection.randomPoints(
+            region=aoi,
+            points=n_sample,
+        )
 
         # 9. Pull to Python and compute ROC-AUC
         # Rename band to "score" for a predictable column name in the DataFrame.
@@ -324,15 +342,12 @@ def run_embedding(state: AppState) -> AppState:
 
         eval_df = geemap.ee_to_df(eval_fc)
         if eval_df.empty or "score" not in eval_df.columns:
-            raise RuntimeError("Embedding evaluation returned no samples — cannot compute AUC.")
+            raise RuntimeError(
+                "Embedding evaluation returned no samples — cannot compute AUC."
+            )
         auc = roc_auc_score(eval_df["PresAbs"], eval_df["score"])
 
-        # 10. Get AOI and clip the dot product image
-        country_aoi, county_aoi = get_aoi_from_nuts(
-            state.country_code, state.county_name or None
-        )
-        aoi = county_aoi if county_aoi is not None else country_aoi
-
+        # 10. Clip the dot product image to AOI (already computed above)
         classified_img = dot_product_img.clip(aoi)
 
         # 11. Store results
@@ -341,8 +356,6 @@ def run_embedding(state: AppState) -> AppState:
         state.classified_img = classified_img
 
     except Exception as e:
-        raise RuntimeError(
-            f"Embedding SDM pipeline failed: {str(e)}"
-        ) from e
+        raise RuntimeError(f"Embedding SDM pipeline failed: {str(e)}") from e
 
     return state

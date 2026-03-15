@@ -4,225 +4,202 @@ GBIF service module.
 Provides multiple modes for fetching species occurrence data from GBIF:
 - "explore": Fast REST API query (up to 300 records per page)
 - "deepdive": Paginated REST API query (all records, no limit)
-- "own": Load from cached parquet dataset
+- "own": Download GBIF dataset via authenticated API and cache as parquet
 """
 
-import os
+import io
+import zipfile
 from pathlib import Path
-from typing import Optional
-import pandas as pd
+from typing import Optional, Callable
+
+import duckdb
 import geopandas as gpd
+import pandas as pd
+import polars as pl
 import requests
 from pygbif import occurrences
 
 
-def ensure_dataset_cached(key: str) -> Path:
+def ensure_dataset_cached(
+    key: str,
+    user: str,
+    pwd: str,
+    progress_callback: Optional[Callable[[str], None]] = None,
+) -> Path:
     """
-    Download a GBIF dataset by key and cache it as parquet.
+    Check GBIF download status and cache as parquet.
 
-    Uses the pygbif library's occurrence download API to fetch a dataset.
-    If the file already exists in cache, returns the path immediately
-    without downloading.
-
-    Parameters
-    ----------
-    key : str
-        The GBIF dataset key (UUID).
-
-    Returns
-    -------
-    Path
-        Path to the cached parquet file at ~/.sdm-toolbox/datasets/<key>.parquet
-
-    Raises
-    ------
-    ValueError
-        If the dataset cannot be downloaded or processed.
+    Uses occ.download_meta() to check if a previously created download is ready.
+    If the file already exists in cache, returns immediately without checking.
     """
+    if progress_callback is None:
+
+        def noop(msg):
+            pass
+
+        progress_callback = noop
+
     cache_dir = Path.home() / ".sdm-toolbox" / "datasets"
     cache_dir.mkdir(parents=True, exist_ok=True)
     cache_path = cache_dir / f"{key}.parquet"
 
-    # Return immediately if already cached
     if cache_path.exists():
+        progress_callback("Using cached dataset")
         return cache_path
 
     try:
-        # Fetch all occurrences for this dataset
-        # Use pagination to get all records
-        all_records = []
-        offset = 0
-        limit = 300  # Max per API call
+        progress_callback("Checking download status...")
 
-        while True:
-            result = occurrences.search(
-                datasetKey=key,
-                limit=limit,
-                offset=offset,
-                hasCoordinate=True
+        status = occurrences.download_meta(key)
+        download_status = status.get("status", "UNKNOWN")
+
+        if download_status != "SUCCEEDED":
+            raise ValueError(
+                f"Download not ready (status: {download_status}). "
+                f"Please create a download at gbif.org first."
             )
 
-            records = result.get("results", [])
-            if not records:
-                break
+        progress_callback("Download ready. Fetching...")
 
-            all_records.extend(records)
+        download_url = status.get("downloadLink")
+        if not download_url:
+            raise ValueError("No download link available")
 
-            # Check if there are more records
-            if len(records) < limit:
-                break
+        response = requests.get(download_url, timeout=300)
+        response.raise_for_status()
 
-            offset += limit
+        progress_callback("Extracting and processing...")
 
-        if not all_records:
-            raise ValueError(f"No records found for dataset key: {key}")
+        with zipfile.ZipFile(io.BytesIO(response.content)) as zf:
+            tsv_name = next(
+                (
+                    n
+                    for n in zf.namelist()
+                    if (n.endswith(".tsv") or n.endswith(".csv"))
+                ),
+                None,
+            )
+            if tsv_name is None:
+                raise ValueError("No TSV file found in archive")
 
-        # Convert to DataFrame and filter required columns
-        df = pd.json_normalize(all_records)
+            with zf.open(tsv_name) as tsv_file:
+                df = pl.read_csv(tsv_file, separator="\t", low_memory=True)
 
-        # Ensure required columns exist
-        required_cols = ["species", "year", "decimalLatitude", "decimalLongitude"]
-        for col in required_cols:
-            if col not in df.columns:
-                if col == "species":
-                    df[col] = df.get("scientificName", "")
-                elif col == "year":
-                    df[col] = pd.to_numeric(df.get("year", None), errors="coerce")
-                elif col not in df.columns:
-                    raise ValueError(f"Required column '{col}' not found in dataset")
+        lat_cols = ["decimalLatitude", "lat", "latitude", "y"]
+        lon_cols = ["decimalLongitude", "lon", "longitude", "x"]
 
-        # Save to parquet
-        df.to_parquet(cache_path, index=False)
+        lat_col = next((c for c in lat_cols if c in df.columns), None)
+        lon_col = next((c for c in lon_cols if c in df.columns), None)
+
+        if not lat_col or not lon_col:
+            raise ValueError(
+                f"Required coordinate columns not found. "
+                f"Expected one of {lat_cols} and {lon_cols}"
+            )
+
+        df = df.rename({lat_col: "decimalLatitude", lon_col: "decimalLongitude"})
+
+        if "species" not in df.columns and "scientificName" in df.columns:
+            df = df.with_columns(pl.col("scientificName").alias("species"))
+        if "year" not in df.columns:
+            df = df.with_columns(pl.lit(None).cast(pl.Int64).alias("year"))
+
+        df.write_parquet(cache_path)
+        progress_callback("Dataset cached successfully")
         return cache_path
 
     except Exception as e:
-        raise ValueError(f"Failed to download/cache dataset {key}: {str(e)}") from e
+        raise ValueError(f"Failed to cache dataset {key}: {str(e)}") from e
 
 
 def fetch_presences(
     mode: str,
     species: str,
     country: str,
-    year: int,
-    dataset_key: str = ""
+    year_start: int,
+    year_end: int,
+    dataset_key: str = "",
+    gbif_user: str = "",
+    gbif_pwd: str = "",
+    progress_callback: Optional[Callable[[str], None]] = None,
 ) -> gpd.GeoDataFrame:
-    """
-    Fetch species occurrence data from GBIF in different modes.
-
-    Parameters
-    ----------
-    mode : str
-        One of "explore", "deepdive", or "own".
-        - "explore": Fast GBIF REST API (~seconds, up to 300 records per page)
-        - "deepdive": Paginated REST API query (all records, slower)
-        - "own": Load from cached parquet dataset
-    species : str
-        Scientific name of the species.
-    country : str
-        ISO 3166-1 alpha-2 country code (e.g., "AT" for Austria).
-    year : int
-        Year of observations to filter by.
-    dataset_key : str, optional
-        Required for "own" mode. The GBIF dataset key (UUID).
-
-    Returns
-    -------
-    gpd.GeoDataFrame
-        GeoDataFrame with columns: species, year, geometry (Point), crs EPSG:4326.
-        Returns empty GeoDataFrame if no records found (never returns None).
-
-    Raises
-    ------
-    ValueError
-        If mode is invalid or dataset_key is missing for "own" mode.
-    """
+    """Fetch species occurrence data from GBIF in different modes."""
     if mode not in ["explore", "deepdive", "own"]:
-        raise ValueError(f"Invalid mode: {mode}. Must be 'explore', 'deepdive', or 'own'.")
+        raise ValueError(
+            f"Invalid mode: {mode}. Must be 'explore', 'deepdive', or 'own'."
+        )
 
     if mode == "explore":
-        return _fetch_explore(species, country, year)
+        return _fetch_explore(species, country, year_start, year_end)
     elif mode == "deepdive":
-        return _fetch_deepdive(species, country, year)
+        return _fetch_deepdive(species, country, year_start, year_end)
     else:  # mode == "own"
         if not dataset_key:
             raise ValueError("dataset_key is required for 'own' mode")
-        return _fetch_own(dataset_key, species, year)
+        if not gbif_user or not gbif_pwd:
+            raise ValueError("gbif_user and gbif_pwd are required for 'own' mode")
+        return _fetch_own(
+            dataset_key,
+            species,
+            year_start,
+            year_end,
+            gbif_user,
+            gbif_pwd,
+            progress_callback,
+        )
 
 
-def _fetch_explore(species: str, country: str, year: int) -> gpd.GeoDataFrame:
-    """
-    Fast GBIF REST API query.
-
-    Fetches up to 300 records in a single API call.
-    """
+def _fetch_explore(
+    species: str, country: str, year_start: int, year_end: int
+) -> gpd.GeoDataFrame:
+    """Fast GBIF REST API query - up to 300 records."""
     params = {
         "scientificName": species,
         "country": country,
         "hasCoordinate": "true",
         "basisOfRecord": "HUMAN_OBSERVATION",
         "limit": 300,
+        "year": f"{year_start},{year_end}",
     }
 
     try:
         response = requests.get(
-            "https://api.gbif.org/v1/occurrence/search",
-            params=params,
-            timeout=30
+            "https://api.gbif.org/v1/occurrence/search", params=params, timeout=30
         )
         response.raise_for_status()
         data = response.json()
 
-        occurrences_list = data.get("results", [])
+        records = data.get("results", [])
+        if not records:
+            return _empty_gdf()
 
-        if not occurrences_list:
-            # Return empty GeoDataFrame with correct schema
-            return gpd.GeoDataFrame(
-                columns=["species", "year", "geometry"],
-                geometry="geometry",
-                crs="EPSG:4326"
-            )
+        df = pd.json_normalize(records)
 
-        # Convert to DataFrame and extract required columns
-        df = pd.json_normalize(occurrences_list)
-
-        # Ensure species column exists
         if "species" not in df.columns:
             if "scientificName" in df.columns:
-                df["species"] = df["scientificName"]
+                df["species"] = df["scientificName"].copy()
             else:
-                df["species"] = species
+                KeyError
 
-        # Create GeoDataFrame
         gdf = gpd.GeoDataFrame(
-            df[["species", "year"]],
-            geometry=gpd.points_from_xy(
-                df["decimalLongitude"],
-                df["decimalLatitude"]
-            ),
-            crs="EPSG:4326"
-        )
-
-        return gdf
+            df,
+            geometry=gpd.points_from_xy(df["decimalLongitude"], df["decimalLatitude"]),
+            crs="EPSG:4326",
+        )[["species", "year", "geometry"]]
+        return _cleanup_gdf(gdf)
 
     except Exception as e:
-        # Log error but return empty GeoDataFrame instead of raising
         print(f"Error fetching data in explore mode: {e}")
-        return gpd.GeoDataFrame(
-            columns=["species", "year", "geometry"],
-            geometry="geometry",
-            crs="EPSG:4326"
-        )
+        return _empty_gdf()
 
 
-def _fetch_deepdive(species: str, country: str, year: int) -> gpd.GeoDataFrame:
-    """
-    Paginated GBIF REST API query.
-
-    Fetches all records by looping through pages until no more records found.
-    """
+def _fetch_deepdive(
+    species: str, country: str, year_start: int, year_end: int
+) -> gpd.GeoDataFrame:
+    """Paginated GBIF REST API query - all records."""
     all_records = []
     offset = 0
-    limit = 300  # Max per API call
+    limit = 300
 
     try:
         while True:
@@ -231,9 +208,9 @@ def _fetch_deepdive(species: str, country: str, year: int) -> gpd.GeoDataFrame:
                 country=country,
                 hasCoordinate=True,
                 basisOfRecord="HUMAN_OBSERVATION",
-                year=year,
+                year=f"{year_start},{year_end}",
                 limit=limit,
-                offset=offset
+                offset=offset,
             )
 
             records = result.get("results", [])
@@ -242,118 +219,92 @@ def _fetch_deepdive(species: str, country: str, year: int) -> gpd.GeoDataFrame:
 
             all_records.extend(records)
 
-            # Check if there are more records
             if len(records) < limit:
                 break
 
             offset += limit
 
         if not all_records:
-            # Return empty GeoDataFrame with correct schema
-            return gpd.GeoDataFrame(
-                columns=["species", "year", "geometry"],
-                geometry="geometry",
-                crs="EPSG:4326"
-            )
+            return _empty_gdf()
 
-        # Convert to DataFrame
         df = pd.json_normalize(all_records)
 
-        # Ensure species column exists
         if "species" not in df.columns:
             if "scientificName" in df.columns:
-                df["species"] = df["scientificName"]
+                df["species"] = df["scientificName"].copy()
             else:
                 df["species"] = species
 
-        # Create GeoDataFrame
+        gdf = gpd.GeoDataFrame(
+            df,
+            geometry=gpd.points_from_xy(df["decimalLongitude"], df["decimalLatitude"]),
+            crs="EPSG:4326",
+        )[["species", "year", "geometry"]]
+        return _cleanup_gdf(gdf)
+
+    except Exception as e:
+        print(f"Error fetching data in deepdive mode: {e}")
+        return _empty_gdf()
+
+
+def _fetch_own(
+    dataset_key: str,
+    species: str,
+    year_start: int,
+    year_end: int,
+    user: str,
+    pwd: str,
+    progress_callback: Optional[Callable[[str], None]] = None,
+) -> gpd.GeoDataFrame:
+    """Load species data from cached parquet using duckdb for filtering."""
+    try:
+        parquet_path = ensure_dataset_cached(dataset_key, user, pwd, progress_callback)
+
+        species_col = (
+            "species"
+            if "species" in pl.read_parquet(parquet_path, n_rows=1).columns
+            else "scientificName"
+        )
+
+        query = f"""
+            SELECT species, year, decimalLatitude, decimalLongitude
+            FROM '{parquet_path}'
+            WHERE LOWER({species_col}) LIKE '%' || LOWER('{species}') || '%'
+            AND year >= {year_start} AND year <= {year_end}
+        """
+
+        df = duckdb.query(query).df()
+
+        if df.empty:
+            return _empty_gdf()
+
         gdf = gpd.GeoDataFrame(
             df[["species", "year"]],
-            geometry=gpd.points_from_xy(
-                df["decimalLongitude"],
-                df["decimalLatitude"]
-            ),
-            crs="EPSG:4326"
+            geometry=gpd.points_from_xy(df["decimalLongitude"], df["decimalLatitude"]),
+            crs="EPSG:4326",
         )
-
-        return gdf
+        return _cleanup_gdf(gdf)
 
     except Exception as e:
-        # Log error but return empty GeoDataFrame instead of raising
-        print(f"Error fetching data in deepdive mode: {e}")
-        return gpd.GeoDataFrame(
-            columns=["species", "year", "geometry"],
-            geometry="geometry",
-            crs="EPSG:4326"
-        )
-
-
-def _fetch_own(dataset_key: str, species: str, year: int) -> gpd.GeoDataFrame:
-    """
-    Load species data from cached parquet dataset.
-
-    Filters by species name (case-insensitive contains) and year.
-    """
-    try:
-        # Get the cached parquet file
-        parquet_path = ensure_dataset_cached(dataset_key)
-
-        # Load the parquet file
-        df = pd.read_parquet(parquet_path)
-
-        # Filter by species (case-insensitive contains)
-        if "species" in df.columns:
-            species_mask = df["species"].str.lower().str.contains(
-                species.lower(),
-                na=False
-            )
-        elif "scientificName" in df.columns:
-            df["species"] = df["scientificName"]
-            species_mask = df["species"].str.lower().str.contains(
-                species.lower(),
-                na=False
-            )
-        else:
-            # No species column, return empty
-            return gpd.GeoDataFrame(
-                columns=["species", "year", "geometry"],
-                geometry="geometry",
-                crs="EPSG:4326"
-            )
-
-        # Filter by year
-        if "year" in df.columns:
-            year_mask = df["year"] == year
-        else:
-            year_mask = True
-
-        filtered_df = df[species_mask & year_mask]
-
-        if filtered_df.empty:
-            # Return empty GeoDataFrame with correct schema
-            return gpd.GeoDataFrame(
-                columns=["species", "year", "geometry"],
-                geometry="geometry",
-                crs="EPSG:4326"
-            )
-
-        # Create GeoDataFrame
-        gdf = gpd.GeoDataFrame(
-            filtered_df[["species", "year"]],
-            geometry=gpd.points_from_xy(
-                filtered_df["decimalLongitude"],
-                filtered_df["decimalLatitude"]
-            ),
-            crs="EPSG:4326"
-        )
-
-        return gdf
-
-    except Exception as e:
-        # Log error but return empty GeoDataFrame instead of raising
         print(f"Error fetching data in own mode: {e}")
-        return gpd.GeoDataFrame(
-            columns=["species", "year", "geometry"],
-            geometry="geometry",
-            crs="EPSG:4326"
-        )
+        return _empty_gdf()
+
+
+def _empty_gdf() -> gpd.GeoDataFrame:
+    """Return empty GeoDataFrame with correct schema."""
+    return gpd.GeoDataFrame(
+        columns=["species", "year", "geometry"],
+        geometry="geometry",
+        crs="EPSG:4326",
+    )
+
+
+def _cleanup_gdf(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+    """Convert non-geometry columns to strings for GeoJSON compatibility."""
+    if gdf is None or gdf.empty:
+        return gdf
+    for col in gdf.columns:
+        if col == "geometry":
+            continue
+        gdf[col] = gdf[col].apply(lambda x: str(x) if pd.notna(x) else None)
+    return gdf

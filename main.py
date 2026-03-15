@@ -9,7 +9,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import multiprocessing
 from pathlib import Path
+
+# Set multiprocessing start method before any imports that use it
+try:
+    multiprocessing.set_start_method("fork", force=True)
+except RuntimeError:
+    pass  # Already set
 
 from nicegui import app as nicegui_app, ui, context as nicegui_context  # noqa: F401
 
@@ -21,6 +28,15 @@ def _load_last_project() -> str:
         return json.loads(_CONFIG_PATH.read_text()).get("gee_project", "")
     except Exception:
         return ""
+
+
+def _load_gbif_credentials() -> tuple[str, str]:
+    """Load saved GBIF credentials from config."""
+    try:
+        data = json.loads(_CONFIG_PATH.read_text())
+        return data.get("gbif_user", ""), data.get("gbif_pwd", "")
+    except Exception:
+        return "", ""
 
 
 def _save_last_project(project_id: str) -> None:
@@ -35,6 +51,23 @@ def _save_last_project(project_id: str) -> None:
         _CONFIG_PATH.write_text(json.dumps(data))
     except Exception:
         pass
+
+
+def _save_gbif_credentials(user: str, pwd: str) -> None:
+    """Save GBIF credentials to config."""
+    try:
+        _CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        data = {}
+        try:
+            data = json.loads(_CONFIG_PATH.read_text())
+        except Exception:
+            pass
+        data["gbif_user"] = user
+        data["gbif_pwd"] = pwd
+        _CONFIG_PATH.write_text(json.dumps(data))
+    except Exception:
+        pass
+
 
 from app.services import gee_service
 from app.state import AppState
@@ -90,12 +123,18 @@ async def main_page() -> None:
                 with ui.card().classes("p-4"):
                     with ui.row().classes("items-center gap-3"):
                         ui.spinner(size="md")
-                        ui.label("Initialising Google Earth Engine…").classes("text-base")
+                        ui.label("Initialising Google Earth Engine…").classes(
+                            "text-base"
+                        )
             spinner_dlg.open()
 
             first_error = ""
             try:
-                await loop.run_in_executor(None, gee_service.initialize_gee)
+                last_project = _load_last_project() or None
+                await loop.run_in_executor(
+                    None,
+                    lambda: gee_service.initialize_gee(project=last_project),
+                )
                 spinner_dlg.close()
                 render_step(0)
                 return
@@ -174,8 +213,7 @@ async def main_page() -> None:
                     )
                 else:
                     pill = ui.label(label_text).classes(
-                        "px-3 py-1 rounded-full text-sm "
-                        "bg-gray-200 text-gray-500"
+                        "px-3 py-1 rounded-full text-sm bg-gray-200 text-gray-500"
                     )
                 step_pill_refs[0].append(pill)
 
@@ -219,4 +257,9 @@ async def main_page() -> None:
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    ui.run(native=True, title="SDM Toolbox", window_size=(1200, 800), reload=False)
+    ui.run(
+        native=True,
+        title="SDM Toolbox",
+        window_size=(1200, 800),
+        reload=False,
+    )

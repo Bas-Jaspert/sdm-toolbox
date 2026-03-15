@@ -25,6 +25,7 @@ _MODEL_OPTIONS: dict[str, str] = {
 # Render
 # ---------------------------------------------------------------------------
 
+
 def render(state: AppState, on_next: Callable, on_back: Callable) -> None:
     """Render Step 3: Environmental Layers & Model.
 
@@ -50,20 +51,18 @@ def render(state: AppState, on_next: Callable, on_back: Callable) -> None:
     # ------------------------------------------------------------------
 
     def _refresh_next_button() -> None:
-        """Enable/disable Next button based on layer selection and stack."""
-        enabled = (
-            state.layer_stack is not None
-            and len(state.selected_layers) > 0
-        )
+        """Enable Next button based on layer selection or embedding mode."""
+        if state.model_type == "embedding":
+            enabled = True
+        else:
+            enabled = state.layer_stack is not None and len(state.selected_layers) > 0
         if _next_btn_ref:
             _next_btn_ref[0].set_enabled(enabled)
 
     def _refresh_hyperparam_section() -> None:
         """Show/hide hyperparameter section based on model type."""
         if _hyperparam_section_ref:
-            _hyperparam_section_ref[0].set_visibility(
-                state.model_type != "embedding"
-            )
+            _hyperparam_section_ref[0].set_visibility(state.model_type != "embedding")
 
     def _on_layer_change(e) -> None:
         state.selected_layers = list(e.value) if e.value else []
@@ -106,7 +105,7 @@ def render(state: AppState, on_next: Callable, on_back: Callable) -> None:
             try:
                 layer_stack = await loop.run_in_executor(
                     None,
-                    lambda: gee_service.get_layer_information(state.year),
+                    lambda: gee_service.get_layer_information(state.year_start),
                 )
                 state.layer_stack = layer_stack
                 layer_names = list(layer_stack.keys())
@@ -116,8 +115,7 @@ def render(state: AppState, on_next: Callable, on_back: Callable) -> None:
                 if _layer_select_ref:
                     _layer_select_ref[0].set_options(layer_names)
                     valid_selection = [
-                        lyr for lyr in state.selected_layers
-                        if lyr in layer_names
+                        lyr for lyr in state.selected_layers if lyr in layer_names
                     ]
                     _layer_select_ref[0].value = valid_selection
                     state.selected_layers = valid_selection
@@ -152,7 +150,6 @@ def render(state: AppState, on_next: Callable, on_back: Callable) -> None:
         ui.label("Step 3 — Layers & Model").classes("text-xl font-bold mb-4")
 
         with ui.column().classes("w-full gap-4"):
-
             # 1. Layer multi-select
             layer_select = ui.select(
                 label="Environmental Layers",
@@ -188,6 +185,13 @@ def render(state: AppState, on_next: Callable, on_back: Callable) -> None:
                 value=state.model_type,
                 on_change=_on_model_change,
             ).classes("w-full")
+
+            # 3b. Embedding info (shown only for embedding mode)
+            if state.model_type == "embedding":
+                ui.label(
+                    f"Embedding mode: uses Google Satellite Embedding V1 "
+                    f"(year {state.year_start}-{state.year_end}, will use closest available)"
+                ).classes("text-sm text-blue-600")
 
             # 4. Hyperparameters section (hidden for "embedding")
             with ui.column().classes(

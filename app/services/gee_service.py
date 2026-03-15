@@ -31,16 +31,19 @@ def initialize_gee(project: str | None = None) -> bool:
     RuntimeError
         If GEE initialization fails after authentication attempt.
     """
-    # Check if EE is already initialized
-    try:
-        ee.data.getAlgorithms()
-        return True
-    except Exception:
-        pass
+    # If already initialized, verify the connection actually works (the project
+    # stored in ee state may not be registered for Earth Engine).
+    if ee.data.is_initialized():
+        try:
+            ee.Number(1).getInfo()
+            return True
+        except Exception:
+            pass  # fall through and re-initialize with the supplied project
 
     try:
         ee.Authenticate()
         ee.Initialize(project=project)
+        ee.Number(1).getInfo()  # verify the project is registered for EE
         return True
     except Exception as e:
         raise RuntimeError(str(e)) from e
