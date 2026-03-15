@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import date
 from pathlib import Path
 from typing import Callable
 
@@ -155,11 +154,13 @@ def render(state: AppState, on_next: Callable) -> None:
 
     def _on_year_change(e) -> None:
         try:
-            if isinstance(e.value, (list, tuple)) and len(e.value) == 2:
-                state.year_start = int(e.value[0])
-                state.year_end = int(e.value[1])
-            elif isinstance(e.value, date):
-                state.year_start = e.value.year
+            state.year_start = int(e.value)
+        except (TypeError, ValueError):
+            pass
+
+    def _on_year_end_change(e) -> None:
+        try:
+            state.year_end = int(e.value)
         except (TypeError, ValueError):
             pass
 
@@ -217,14 +218,23 @@ def render(state: AppState, on_next: Callable) -> None:
             _county_select_ref.append(county_select)
 
             # 4. Year range selector
-            ui.label("Year range")
-            ui.range(
-                min=2000,
-                max=2030,
-                step=1,
-                value={"min":state.year_start, "max":state.year_end},
-                on_change=_on_year_change,
-            ).classes("w-full").props('label-always')
+            with ui.row().classes("w-full gap-4"):
+                ui.number(
+                    label="Year from",
+                    value=state.year_start,
+                    min=2000,
+                    max=2025,
+                    step=1,
+                    on_change=_on_year_change,
+                ).classes("w-full")
+                ui.number(
+                    label="Year to",
+                    value=state.year_end,
+                    min=2000,
+                    max=2025,
+                    step=1,
+                    on_change=_on_year_end_change,
+                ).classes("w-full")
 
             # 5. Next button — disabled until required fields are filled
             next_btn = ui.button(
