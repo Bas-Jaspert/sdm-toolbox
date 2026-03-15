@@ -50,6 +50,7 @@ def render(state: AppState, on_next: Callable, on_back: Callable) -> None:
     _next_btn_ref: list[ui.button] = []
     _own_section_ref: list[ui.element] = []
     _dataset_key_input_ref: list[ui.input] = []
+    _cached_select_ref: list[ui.select] = []
     _gbif_user_input_ref: list[ui.input] = []
     _gbif_pwd_input_ref: list[ui.input] = []
     _save_creds_checkbox_ref: list[ui.checkbox] = []
@@ -92,10 +93,20 @@ def render(state: AppState, on_next: Callable, on_back: Callable) -> None:
 
             app_main._save_gbif_credentials(state.gbif_user, state.gbif_pwd)
 
-    def _set_austria_key() -> None:
-        state.dataset_key = _AUSTRIA_ANIMALIA_KEY
-        if _dataset_key_input_ref:
-            _dataset_key_input_ref[0].value = _AUSTRIA_ANIMALIA_KEY
+    def _load_cached_datasets() -> None:
+        cached = gbif_service.list_cached_datasets()
+        options = {"": "Select cached dataset..."}
+        options.update({d["key"]: d["key"] for d in cached})
+        if _cached_select_ref:
+            _cached_select_ref[0].set_options(options)
+            if state.dataset_key and state.dataset_key in options:
+                _cached_select_ref[0].set_value(state.dataset_key)
+
+    def _on_cached_select(e) -> None:
+        if e.value:
+            state.dataset_key = e.value
+            if _dataset_key_input_ref:
+                _dataset_key_input_ref[0].value = e.value
 
     def _build_folium_html(gdf) -> str:
         """Build a standalone folium map HTML string centred on gdf bounds."""
@@ -200,17 +211,23 @@ def render(state: AppState, on_next: Callable, on_back: Callable) -> None:
             ) as own_section:
                 ui.label("Own Dataset").classes("font-semibold text-sm text-gray-600")
 
+                cached_select = ui.select(
+                    label="Cached Datasets",
+                    options={"": "Select cached dataset..."},
+                    value=state.dataset_key if state.dataset_key else "",
+                    on_change=_on_cached_select,
+                ).classes("w-full")
+                _cached_select_ref.append(cached_select)
+                _load_cached_datasets()
+
+                ui.label("Or enter GBIF Dataset Key").classes("text-xs text-gray-500")
+
                 dataset_key_input = ui.input(
                     label="GBIF Dataset Key",
                     value=state.dataset_key,
                     on_change=_on_dataset_key_change,
                 ).classes("w-full")
                 _dataset_key_input_ref.append(dataset_key_input)
-
-                ui.button(
-                    "🇦🇹 Austria Animalia",
-                    on_click=_set_austria_key,
-                ).classes("self-start")
 
                 ui.label("GBIF Credentials").classes(
                     "font-semibold text-sm text-gray-600 mt-2"

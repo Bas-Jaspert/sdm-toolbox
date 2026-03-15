@@ -174,11 +174,21 @@ def render(state: AppState, on_back: Callable) -> None:
             try:
 
                 def _start_export():
+                    from toolbox.utils import get_aoi_from_nuts
+
+                    country_aoi, county_aoi = get_aoi_from_nuts(
+                        country_code=state.country_code,
+                        county_name=state.county_name or None,
+                    )
+                    aoi = county_aoi if county_aoi is not None else country_aoi
+                    clipped_img = state.classified_img.clip(aoi)
+
                     task = ee.batch.Export.image.toDrive(
-                        image=state.classified_img,
+                        image=clipped_img,
                         description="SDM_Prediction",
                         fileFormat="GeoTIFF",
                         scale=90,
+                        maxPixels=1e13,
                     )
                     task.start()
                     return "Export started. Check Google Earth Engine Tasks tab."

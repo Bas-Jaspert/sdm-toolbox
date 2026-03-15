@@ -112,6 +112,14 @@ def ensure_dataset_cached(
         raise ValueError(f"Failed to cache dataset {key}: {str(e)}") from e
 
 
+def list_cached_datasets() -> list[dict]:
+    """List all cached dataset files."""
+    cache_dir = Path.home() / ".sdm-toolbox" / "datasets"
+    if not cache_dir.exists():
+        return []
+    return [{"key": p.stem, "path": str(p)} for p in cache_dir.glob("*.parquet")]
+
+
 def fetch_presences(
     mode: str,
     species: str,
