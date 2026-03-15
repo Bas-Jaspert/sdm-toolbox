@@ -1,0 +1,42 @@
+[project]
+name = "toolbox"
+version = "0.1.0"
+description = "SDM Toolbox — species distribution modelling with GEE and NiceGUI"
+readme = "README.md"
+requires-python = ">=3.11,<3.14"
+dependencies = [
+    # Google Earth Engine
+    "earthengine-api==0.1.390",
+    "geemap==0.32.0",
+    # Data / geo
+    "geopandas",
+    "pandas",
+    "shapely==2.1.2",
+    "scipy==1.17.0",
+    "scikit-learn==1.8.0",
+    "pygbif==0.6.6",
+    # Visualisation
+    "folium==0.15.1",
+    "matplotlib==3.10.8",
+    "xyzservices==2023.10.1",
+    # Desktop UI
+    "nicegui>=2.0",
+    "pywebview>=5.0",
+    "httpx>=0.27",
+    # Required by geemap (pkg_resources was removed from setuptools>=71)
+    "setuptools<71",
+    # Notebook support
+    "ipython==8.18.1",
+    "statsmodels",
+    "python-box==7.1.1",
+    "pyqt6>=6.10.2",
+    "qtpy>=2.4.3",
+    "pyqt6-webengine>=6.10.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["toolbox", "app"]
