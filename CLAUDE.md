@@ -9,7 +9,6 @@ SDM-Toolbox is a Python package for interactive species distribution modeling (S
 1. **NiceGUI desktop app** (`main.py`) — the primary interface, a guided 5-step stepper
 2. **Jupyter notebook** (`sdm_workflow.ipynb`) — advanced users who want full control
 
-The old Streamlit interface (`toolbox/gui.py`, `toolbox/streamlit_utils.py`) is superseded but kept for reference.
 
 ## Running the App
 
@@ -45,6 +44,14 @@ toolbox/
 │   ├── utils.py                   # UNCHANGED — shared core logic
 │   ├── stat_functions.py          # UNCHANGED
 │   └── __init__.py
+├── tests/
+│   ├── conftest.py
+│   ├── test_services/
+│   │   └── test_state.py
+│   └── test_utils/
+│       ├── test_aoi.py
+│       ├── test_background.py
+│       └── test_compute_sdm.py
 ├── assets/                        # NUTS GeoJSONs, background_data.csv
 └── sdm_workflow.ipynb             # UNCHANGED — advanced user interface
 ```
@@ -96,12 +103,23 @@ Classification maps use the RdYlBu-reversed palette (blue = low suitability → 
 
 Managed via `uv` / `pyproject.toml`. Key packages:
 
-- `earthengine-api==0.1.390`, `geemap==0.32.0`, `folium==0.15.1`
-- `scikit-learn==1.8.0`, `scipy==1.17.0`, `geopandas`, `shapely==2.1.2`
-- `nicegui>=2.0`, `pywebview>=5.0`, `pyqt6>=6.10.2`, `pyqt6-webengine`, `qtpy>=2.4.3`
-- `pygbif==0.6.6`, `httpx>=0.27`
-- `setuptools<71` — pkg_resources removed in setuptools>=71, required by geemap 0.32.0
+- `earthengine-api>=0.1.390`, `geemap>=0.32.0`, `folium>=0.18`
+- `scikit-learn>=1.8`, `scipy>=1.17`, `geopandas>=0.14`, `shapely>=2.1`
+- `nicegui>=2.0`, `pywebview>=5.0`, `pyqt6>=6.10`, `pyqt6-webengine>=6.10`, `qtpy>=2.4`
+- `pygbif>=0.6.6`, `httpx>=0.27`
 
-## No Test Suite
+## Test Suite
 
-There are no automated tests. Validation is done manually by running `uv run python main.py` and stepping through the workflow with a test species (e.g. *Lagopus muta*, country AT).
+Run the automated test suite with:
+
+```bash
+uv run pytest
+```
+
+Test files:
+- `tests/test_services/test_state.py` — AppState dataclass validation
+- `tests/test_utils/test_aoi.py` — AOI / NUTS-2 helpers
+- `tests/test_utils/test_background.py` — pseudo-absence sampling
+- `tests/test_utils/test_compute_sdm.py` — SDM pipeline unit tests
+
+Manual integration test: `uv run python main.py` with *Lagopus muta*, country AT.
