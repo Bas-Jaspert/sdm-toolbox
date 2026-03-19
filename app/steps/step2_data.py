@@ -6,7 +6,7 @@ import asyncio
 from typing import Callable, TYPE_CHECKING
 
 import folium
-from nicegui import ui
+from nicegui import context as nicegui_context, ui
 
 from app.map_server import make_iframe, set_iframe_map
 from app.state import AppState
@@ -45,6 +45,8 @@ def render(state: AppState, on_next: Callable, on_back: Callable) -> None:
     on_back:
         Callable invoked when the user clicks the "← Back" button.
     """
+
+    _client = nicegui_context.client
 
     # Mutable container references so inner closures can reach widgets.
     _next_btn_ref: list[ui.button] = []
@@ -128,6 +130,14 @@ def render(state: AppState, on_next: Callable, on_back: Callable) -> None:
             ).add_to(fmap)
 
         fmap.fit_bounds([[bounds[1], bounds[0]], [bounds[3], bounds[2]]])
+        legend_html = """<div style="position:fixed;bottom:20px;right:20px;z-index:999;
+    background:white;padding:8px 12px;border-radius:6px;
+    box-shadow:0 2px 6px rgba(0,0,0,.3);font:12px Arial,sans-serif;">
+  <b>Legend</b><br>
+  <span style="display:inline-block;width:10px;height:10px;border-radius:50%;
+    background:#e74c3c;margin-right:5px;"></span>Occurrence
+</div>"""
+        fmap.get_root().html.add_child(folium.Element(legend_html))
         return fmap.get_root().render()
 
     def _update_map(gdf) -> None:
@@ -170,24 +180,27 @@ def render(state: AppState, on_next: Callable, on_back: Callable) -> None:
                 )
                 state.species_gdf = gdf
                 n = len(gdf)
-                if _status_label_ref:
-                    _status_label_ref[0].set_text(
-                        f"Found {n} presence points"
-                        if n > 0
-                        else "No presence points found."
-                    )
-                if n > 0:
-                    _update_map(gdf)
+                with _client:
+                    if _status_label_ref:
+                        _status_label_ref[0].set_text(
+                            f"Found {n} presence points"
+                            if n > 0
+                            else "No presence points found."
+                        )
+                    if n > 0:
+                        _update_map(gdf)
             except Exception as exc:  # noqa: BLE001
                 state.species_gdf = None
-                if _status_label_ref:
-                    _status_label_ref[0].set_text(f"Error: {exc}")
+                with _client:
+                    if _status_label_ref:
+                        _status_label_ref[0].set_text(f"Error: {exc}")
             finally:
-                if _fetch_btn_ref:
-                    _fetch_btn_ref[0].set_enabled(True)
-                if _progress_ref:
-                    _progress_ref[0].set_visibility(False)
-                _refresh_next_button()
+                with _client:
+                    if _fetch_btn_ref:
+                        _fetch_btn_ref[0].set_enabled(True)
+                    if _progress_ref:
+                        _progress_ref[0].set_visibility(False)
+                    _refresh_next_button()
 
         asyncio.ensure_future(_run())
 
@@ -284,7 +297,7 @@ def render(state: AppState, on_next: Callable, on_back: Callable) -> None:
             _status_label_ref.append(status_label)
 
             # 6. Map preview (persistent iframe element updated via set_iframe_map)
-            map_iframe = make_iframe(height="420px")
+            map_iframe = make_iframe(height="60vh")
             _map_iframe_ref.append(map_iframe)
             if state.species_gdf is not None and len(state.species_gdf) > 0:
                 status_label.set_text(f"Found {len(state.species_gdf)} presence points")

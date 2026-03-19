@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from typing import Callable
 
-from nicegui import ui
+from nicegui import context as nicegui_context, ui
 
 from app.state import AppState
 from app.services import sdm_service
@@ -86,6 +86,8 @@ def render(state: AppState, on_next: Callable, on_back: Callable) -> None:
         Callable invoked when the user clicks the "← Back" button.
     """
 
+    _client = nicegui_context.client
+
     # Mutable container references so inner closures can reach widgets.
     _run_btn_ref: list[ui.button] = []
     _next_btn_ref: list[ui.button] = []
@@ -143,19 +145,21 @@ def render(state: AppState, on_next: Callable, on_back: Callable) -> None:
         async def _run() -> None:
             loop = asyncio.get_event_loop()
 
-            # Show progress bar
-            if _progress_bar_ref:
-                _progress_bar_ref[0].set_visibility(True)
-                _progress_bar_ref[0].value = 0.0
+            with _client:
+                # Show progress bar
+                if _progress_bar_ref:
+                    _progress_bar_ref[0].set_visibility(True)
+                    _progress_bar_ref[0].value = 0.0
 
             # Progress simulation coroutine that runs while computation proceeds.
             async def _simulate_progress() -> None:
                 for idx, label in enumerate(steps):
-                    if _status_label_ref:
-                        _status_label_ref[0].set_text(label)
-                        _status_label_ref[0].set_visibility(True)
-                    if _progress_bar_ref:
-                        _progress_bar_ref[0].value = idx / n_steps
+                    with _client:
+                        if _status_label_ref:
+                            _status_label_ref[0].set_text(label)
+                            _status_label_ref[0].set_visibility(True)
+                        if _progress_bar_ref:
+                            _progress_bar_ref[0].value = idx / n_steps
                     await asyncio.sleep(1.5)
 
             # Select the appropriate service call
@@ -177,25 +181,28 @@ def render(state: AppState, on_next: Callable, on_back: Callable) -> None:
 
                 traceback.print_exc()
                 progress_task.cancel()
-                if _status_label_ref:
-                    _status_label_ref[0].set_text(f"Error: {exc}")
-                    _status_label_ref[0].set_visibility(True)
-                if _progress_bar_ref:
-                    _progress_bar_ref[0].set_visibility(False)
+                with _client:
+                    if _status_label_ref:
+                        _status_label_ref[0].set_text(f"Error: {exc}")
+                        _status_label_ref[0].set_visibility(True)
+                    if _progress_bar_ref:
+                        _progress_bar_ref[0].set_visibility(False)
                 return
             finally:
-                if _run_btn_ref:
-                    _run_btn_ref[0].set_enabled(True)
+                with _client:
+                    if _run_btn_ref:
+                        _run_btn_ref[0].set_enabled(True)
 
             # Computation succeeded — finish progress display
             progress_task.cancel()
-            if _status_label_ref:
-                _status_label_ref[0].set_text("Done.")
-            if _progress_bar_ref:
-                _progress_bar_ref[0].value = 1.0
+            with _client:
+                if _status_label_ref:
+                    _status_label_ref[0].set_text("Done.")
+                if _progress_bar_ref:
+                    _progress_bar_ref[0].value = 1.0
 
-            _show_metrics()
-            _refresh_next_button()
+                _show_metrics()
+                _refresh_next_button()
 
         asyncio.ensure_future(_run())
 

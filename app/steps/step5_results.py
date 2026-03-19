@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Callable
 
+import branca.colormap as cm
 import ee
 import folium
 import matplotlib
@@ -11,7 +12,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import geemap
-from nicegui import ui
+from nicegui import context as nicegui_context, ui
 
 from app.map_server import make_iframe, set_iframe_map
 from app.state import AppState
@@ -21,46 +22,99 @@ from app.state import AppState
 # ---------------------------------------------------------------------------
 
 
-def _build_map_html(state: AppState) -> str:
-    """Return standalone folium HTML for the habitat suitability map, or '' on failure."""
-    try:
-        if state.classified_img is None:
-            return ""
+_VIS_PARAMS = {
+    "min": 0,
+    "max": 1,
+    "palette": [
+        "#313695",
+        "#4575b4",
+        "#74add1",
+        "#abd9e9",
+        "#ffffbf",
+        "#fee090",
+        "#fdae61",
+        "#f46d43",
+        "#a50026",
+    ],
+}
 
-        # Derive map centre from presence points, fall back to world view.
-        if state.species_gdf is not None and not state.species_gdf.empty:
-            bounds = state.species_gdf.total_bounds
-            center = [(bounds[1] + bounds[3]) / 2, (bounds[0] + bounds[2]) / 2]
-        else:
-            center = [20, 0]
+_OCCURRENCE_LEGEND = """<div style="position:fixed;bottom:20px;right:20px;z-index:999;
+    background:white;padding:8px 12px;border-radius:6px;
+    box-shadow:0 2px 6px rgba(0,0,0,.3);font:12px Arial,sans-serif;">
+  <b>Legend</b><br>
+  <span style="display:inline-block;width:10px;height:10px;border-radius:50%;
+    background:#e74c3c;margin-right:5px;"></span>Occurrence
+</div>"""
+
+
+def _build_occurrence_map_html(state: AppState) -> str:
+    """Return folium HTML with occurrence points only (no GEE layer), or '' on failure."""
+    if state.species_gdf is None or state.species_gdf.empty:
+        return ""
+    try:
+        bounds = state.species_gdf.total_bounds
+        center_lat = (bounds[1] + bounds[3]) / 2
+        center_lon = (bounds[0] + bounds[2]) / 2
+        fmap = folium.Map(location=[center_lat, center_lon], zoom_start=6)
+        for _, row in state.species_gdf.iterrows():
+            folium.CircleMarker(
+                location=[row.geometry.y, row.geometry.x],
+                radius=4,
+                color="#e74c3c",
+                fill=True,
+                fill_color="#e74c3c",
+                fill_opacity=0.7,
+                weight=1,
+            ).add_to(fmap)
+        fmap.fit_bounds([[bounds[1], bounds[0]], [bounds[3], bounds[2]]])
+        fmap.get_root().html.add_child(folium.Element(_OCCURRENCE_LEGEND))
+        return fmap.get_root().render()
+    except Exception:
+        return ""
+
+
+async def _build_map_html_async(state: AppState) -> str:
+    """Return folium HTML for the suitability map; getMapId runs off the event loop."""
+    import asyncio
+
+    loop = asyncio.get_event_loop()
+
+    if state.classified_img is None:
+        return _build_occurrence_map_html(state)
+
+    # Derive centre from presence points, fall back to world view.
+    bounds = None
+    if state.species_gdf is not None and not state.species_gdf.empty:
+        bounds = state.species_gdf.total_bounds
+        center = [(bounds[1] + bounds[3]) / 2, (bounds[0] + bounds[2]) / 2]
+    else:
+        center = [20, 0]
+
+    try:
+        # Blocking GEE network call — must not run on the event loop thread.
+        classified_img = state.classified_img
+        map_id = await loop.run_in_executor(
+            None, lambda: classified_img.getMapId(_VIS_PARAMS)
+        )
+        tile_url = map_id["tile_fetcher"].url_format
 
         fmap = folium.Map(location=center, zoom_start=6)
-
-        # Add GEE layer via tile URL — avoids geemap.foliumap import.
-        vis_params = {
-            "min": 0,
-            "max": 1,
-            "palette": [
-                "#313695",
-                "#4575b4",
-                "#74add1",
-                "#abd9e9",
-                "#ffffbf",
-                "#fee090",
-                "#fdae61",
-                "#f46d43",
-                "#a50026",
-            ],
-        }
-        map_id = state.classified_img.getMapId(vis_params)
         folium.TileLayer(
-            tiles=map_id["tile_fetcher"].url_format,
+            tiles=tile_url,
             attr="Google Earth Engine",
             name="Habitat Suitability",
             overlay=True,
         ).add_to(fmap)
+        colormap = cm.LinearColormap(
+            colors=_VIS_PARAMS["palette"],
+            vmin=0,
+            vmax=1,
+            caption="Habitat Suitability",
+        )
+        colormap.add_to(fmap)
+        fmap.get_root().html.add_child(folium.Element(_OCCURRENCE_LEGEND))
 
-        if state.species_gdf is not None and not state.species_gdf.empty:
+        if bounds is not None:
             for _, row in state.species_gdf.iterrows():
                 folium.CircleMarker(
                     location=[row.geometry.y, row.geometry.x],
@@ -75,28 +129,7 @@ def _build_map_html(state: AppState) -> str:
 
         return fmap.get_root().render()
     except Exception:
-        # Fallback: presence points only (no GEE layer).
-        if state.species_gdf is None or state.species_gdf.empty:
-            return ""
-        try:
-            bounds = state.species_gdf.total_bounds
-            center_lat = (bounds[1] + bounds[3]) / 2
-            center_lon = (bounds[0] + bounds[2]) / 2
-            fmap = folium.Map(location=[center_lat, center_lon], zoom_start=6)
-            for _, row in state.species_gdf.iterrows():
-                folium.CircleMarker(
-                    location=[row.geometry.y, row.geometry.x],
-                    radius=4,
-                    color="#e74c3c",
-                    fill=True,
-                    fill_color="#e74c3c",
-                    fill_opacity=0.7,
-                    weight=1,
-                ).add_to(fmap)
-            fmap.fit_bounds([[bounds[1], bounds[0]], [bounds[3], bounds[2]]])
-            return fmap.get_root().render()
-        except Exception:
-            return ""
+        return _build_occurrence_map_html(state)
 
 
 _METRIC_COLS = {"roc_auc", "overall_accuracy"}
@@ -140,9 +173,20 @@ def render(state: AppState, on_back: Callable) -> None:
     on_back:
         Callable invoked when the user clicks the "← Back" button.
     """
+    import asyncio
+
+    if state.classified_img is None:
+        ui.notification(
+            "Results not ready — please run the model first.", type="warning"
+        )
+        on_back()
+        return
+
+    _client = nicegui_context.client
 
     # Mutable refs for widgets that inner closures need to reach.
     _map_iframe_ref: list[ui.element] = []
+    _map_loading_ref: list[ui.label] = []
     _export_status_ref: list[ui.label] = []
     _whatif_offset_inputs: dict[str, list[ui.number]] = {}
     _reclassify_status_ref: list[ui.label] = []
@@ -154,6 +198,8 @@ def render(state: AppState, on_back: Callable) -> None:
 
     def _refresh_map(html: str) -> None:
         """Push new folium HTML into the persistent iframe element."""
+        if _map_loading_ref:
+            _map_loading_ref[0].set_visibility(False)
         if _map_iframe_ref and html:
             set_iframe_map(_map_iframe_ref[0], html)
 
@@ -168,8 +214,6 @@ def render(state: AppState, on_back: Callable) -> None:
             return
 
         async def _run() -> None:
-            import asyncio
-
             loop = asyncio.get_event_loop()
             try:
 
@@ -196,11 +240,10 @@ def render(state: AppState, on_back: Callable) -> None:
                 msg = await loop.run_in_executor(None, _start_export)
             except Exception as exc:  # noqa: BLE001
                 msg = f"Export failed: {exc}"
-            if _export_status_ref:
-                _export_status_ref[0].set_text(msg)
-                _export_status_ref[0].set_visibility(True)
-
-        import asyncio
+            with _client:
+                if _export_status_ref:
+                    _export_status_ref[0].set_text(msg)
+                    _export_status_ref[0].set_visibility(True)
 
         asyncio.ensure_future(_run())
 
@@ -241,8 +284,6 @@ def render(state: AppState, on_back: Callable) -> None:
             _reclassify_status_ref[0].set_visibility(True)
 
         async def _run() -> None:
-            import asyncio
-
             loop = asyncio.get_event_loop()
 
             # Read current offset values from inputs
@@ -256,8 +297,9 @@ def render(state: AppState, on_back: Callable) -> None:
             try:
                 from toolbox.utils import classify_image_aoi, get_aoi_from_nuts
 
-                if _reclassify_progress_ref:
-                    _reclassify_progress_ref[0].value = 0.3
+                with _client:
+                    if _reclassify_progress_ref:
+                        _reclassify_progress_ref[0].value = 0.3
 
                 def _do_reclassify():
                     modified_predictors = ee.Image.cat(
@@ -282,33 +324,35 @@ def render(state: AppState, on_back: Callable) -> None:
                         state.selected_layers,
                     )
 
-                if _reclassify_progress_ref:
-                    _reclassify_progress_ref[0].value = 0.5
+                with _client:
+                    if _reclassify_progress_ref:
+                        _reclassify_progress_ref[0].value = 0.5
 
                 new_img = await loop.run_in_executor(None, _do_reclassify)
 
-                if _reclassify_progress_ref:
-                    _reclassify_progress_ref[0].value = 0.8
+                with _client:
+                    if _reclassify_progress_ref:
+                        _reclassify_progress_ref[0].value = 0.8
 
                 state.classified_img = new_img
-                html = _build_map_html(state)
-                _refresh_map(html)
+                html = await _build_map_html_async(state)
+                with _client:
+                    _refresh_map(html)
 
-                if _reclassify_progress_ref:
-                    _reclassify_progress_ref[0].value = 1.0
-                    _reclassify_progress_ref[0].set_visibility(False)
-                if _reclassify_status_ref:
-                    _reclassify_status_ref[0].set_text("Re-classification complete.")
+                    if _reclassify_progress_ref:
+                        _reclassify_progress_ref[0].value = 1.0
+                        _reclassify_progress_ref[0].set_visibility(False)
+                    if _reclassify_status_ref:
+                        _reclassify_status_ref[0].set_text("Re-classification complete.")
 
             except Exception as exc:  # noqa: BLE001
-                if _reclassify_progress_ref:
-                    _reclassify_progress_ref[0].set_visibility(False)
-                if _reclassify_status_ref:
-                    _reclassify_status_ref[0].set_text(
-                        f"Re-classification failed: {exc}"
-                    )
-
-        import asyncio
+                with _client:
+                    if _reclassify_progress_ref:
+                        _reclassify_progress_ref[0].set_visibility(False)
+                    if _reclassify_status_ref:
+                        _reclassify_status_ref[0].set_text(
+                            f"Re-classification failed: {exc}"
+                        )
 
         asyncio.ensure_future(_run())
 
@@ -319,16 +363,23 @@ def render(state: AppState, on_back: Callable) -> None:
         ui.label("Step 5 — Results & Export").classes("text-xl font-bold mb-4")
 
         with ui.column().classes("w-full gap-6"):
-            # 1. Folium map
-            map_iframe = make_iframe(height="520px")
+            # 1. Folium map — tile URL fetched async so the event loop isn't blocked.
+            loading_lbl = ui.label("Loading map…").classes(
+                "text-sm text-gray-400 italic"
+            )
+            _map_loading_ref.append(loading_lbl)
+            map_iframe = make_iframe(height="55vh")
             _map_iframe_ref.append(map_iframe)
-            map_html = _build_map_html(state)
-            if map_html:
-                set_iframe_map(map_iframe, map_html)
-            else:
-                ui.label("No classified image available.").classes(
-                    "text-gray-400 italic text-sm"
-                )
+
+            async def _load_initial_map() -> None:
+                html = await _build_map_html_async(state)
+                with _client:
+                    _refresh_map(html)
+                    if not html:
+                        loading_lbl.set_text("No classified image available.")
+                        loading_lbl.set_visibility(True)
+
+            asyncio.ensure_future(_load_initial_map())
 
             # 2. Feature importance chart (RF only)
             if _has_feature_importances(state):

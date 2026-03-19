@@ -8,7 +8,7 @@ from typing import Callable
 
 import geopandas as gpd
 import httpx
-from nicegui import ui
+from nicegui import context as nicegui_context, ui
 
 from app.state import AppState
 
@@ -76,6 +76,8 @@ def render(state: AppState, on_next: Callable) -> None:
         Callable invoked when the user clicks the "Next →" button.
     """
 
+    _client = nicegui_context.client
+
     # Mutable container used as a closure reference so inner functions can
     # reach widgets that are created after the function is defined.
     _debounce_tasks: list[asyncio.Task] = []
@@ -95,9 +97,10 @@ def render(state: AppState, on_next: Callable) -> None:
     async def _fetch_suggestions(value: str) -> None:
         """Call GBIF suggest API and populate the suggestions dropdown."""
         if not value or len(value) < 2:
-            if _suggestions_ref:
-                _suggestions_ref[0].set_options([])
-                _suggestions_ref[0].set_visibility(False)
+            with _client:
+                if _suggestions_ref:
+                    _suggestions_ref[0].set_options([])
+                    _suggestions_ref[0].set_visibility(False)
             return
         url = f"https://api.gbif.org/v1/species/suggest?q={value}&limit=5"
         try:
@@ -112,9 +115,10 @@ def render(state: AppState, on_next: Callable) -> None:
             names = [n for n in names if n]
         except Exception:
             names = []
-        if _suggestions_ref:
-            _suggestions_ref[0].set_options(names)
-            _suggestions_ref[0].set_visibility(bool(names))
+        with _client:
+            if _suggestions_ref:
+                _suggestions_ref[0].set_options(names)
+                _suggestions_ref[0].set_visibility(bool(names))
 
     def _on_species_change(e) -> None:
         """Handle every keystroke in the species input."""

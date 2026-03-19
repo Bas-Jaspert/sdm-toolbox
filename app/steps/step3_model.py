@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from typing import Callable
 
-from nicegui import ui
+from nicegui import context as nicegui_context, ui
 
 from app.state import AppState
 from app.services import gee_service
@@ -38,6 +38,8 @@ def render(state: AppState, on_next: Callable, on_back: Callable) -> None:
     on_back:
         Callable invoked when the user clicks the "← Back" button.
     """
+
+    _client = nicegui_context.client
 
     # Mutable container references so inner closures can reach widgets.
     _next_btn_ref: list[ui.button] = []
@@ -110,28 +112,31 @@ def render(state: AppState, on_next: Callable, on_back: Callable) -> None:
                 state.layer_stack = layer_stack
                 layer_names = list(layer_stack.keys())
 
-                # Update the layer multi-select options and restore any
-                # previously selected layers that still exist in the new stack.
-                if _layer_select_ref:
-                    _layer_select_ref[0].set_options(layer_names)
-                    valid_selection = [
-                        lyr for lyr in state.selected_layers if lyr in layer_names
-                    ]
-                    _layer_select_ref[0].value = valid_selection
-                    state.selected_layers = valid_selection
+                with _client:
+                    # Update the layer multi-select options and restore any
+                    # previously selected layers that still exist in the new stack.
+                    if _layer_select_ref:
+                        _layer_select_ref[0].set_options(layer_names)
+                        valid_selection = [
+                            lyr for lyr in state.selected_layers if lyr in layer_names
+                        ]
+                        _layer_select_ref[0].value = valid_selection
+                        state.selected_layers = valid_selection
 
-                if _status_label_ref:
-                    _status_label_ref[0].set_text(
-                        f"GEE initialized — {len(layer_names)} layers available."
-                    )
+                    if _status_label_ref:
+                        _status_label_ref[0].set_text(
+                            f"GEE initialized — {len(layer_names)} layers available."
+                        )
 
             except Exception as exc:  # noqa: BLE001
-                if _status_label_ref:
-                    _status_label_ref[0].set_text(f"Error: {exc}")
+                with _client:
+                    if _status_label_ref:
+                        _status_label_ref[0].set_text(f"Error: {exc}")
             finally:
-                if _init_btn_ref:
-                    _init_btn_ref[0].set_enabled(True)
-                _refresh_next_button()
+                with _client:
+                    if _init_btn_ref:
+                        _init_btn_ref[0].set_enabled(True)
+                    _refresh_next_button()
 
         asyncio.ensure_future(_run())
 
@@ -157,7 +162,7 @@ def render(state: AppState, on_next: Callable, on_back: Callable) -> None:
                 options=_initial_layer_options,
                 value=state.selected_layers,
                 on_change=_on_layer_change,
-            ).classes("w-full")
+            ).classes("w-full").props("use-chips")
             _layer_select_ref.append(layer_select)
 
             # 2. Initialize GEE Layers button + status

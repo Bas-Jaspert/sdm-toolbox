@@ -211,9 +211,19 @@ async def main_page() -> None:
                         "px-3 py-1 rounded-full text-sm font-semibold "
                         "bg-blue-600 text-white"
                     )
+                elif i < active_index:
+                    pill = (
+                        ui.label(label_text)
+                        .classes(
+                            "px-3 py-1 rounded-full text-sm bg-gray-300 "
+                            "cursor-pointer hover:bg-gray-400"
+                        )
+                        .on("click", lambda idx=i: navigate(idx))
+                    )
                 else:
                     pill = ui.label(label_text).classes(
-                        "px-3 py-1 rounded-full text-sm bg-gray-200 text-gray-500"
+                        "px-3 py-1 rounded-full text-sm bg-gray-200 "
+                        "text-gray-400 opacity-50"
                     )
                 step_pill_refs[0].append(pill)
 
@@ -229,16 +239,21 @@ async def main_page() -> None:
         with content_ref[0]:
             _, fn = STEPS[step_index]
 
-            if step_index == 0:
-                fn(state, on_next=lambda: navigate(1))
-            elif step_index == 4:
-                fn(state, on_back=lambda: navigate(3))
-            else:
-                fn(
-                    state,
-                    on_next=lambda si=step_index: navigate(si + 1),
-                    on_back=lambda si=step_index: navigate(si - 1),
-                )
+            try:
+                if step_index == 0:
+                    fn(state, on_next=lambda: navigate(1))
+                elif step_index == 4:
+                    fn(state, on_back=lambda: navigate(3))
+                else:
+                    fn(
+                        state,
+                        on_next=lambda si=step_index: navigate(si + 1),
+                        on_back=lambda si=step_index: navigate(si - 1),
+                    )
+            except Exception as exc:  # noqa: BLE001
+                ui.notification(f"Error loading step: {exc}", type="negative")
+                fallback = current_step[0] - 1 if current_step[0] > 0 else 0
+                navigate(fallback)
 
     def navigate(new_index: int) -> None:
         """Move to *new_index* and re-render."""
@@ -260,6 +275,6 @@ if __name__ == "__main__":
     ui.run(
         native=True,
         title="SDM Toolbox",
-        window_size=(1200, 800),
+        window_size=(1400, 900),
         reload=False,
     )
