@@ -2,6 +2,8 @@
 
 An interactive desktop application for species distribution modeling (SDM) using Google Earth Engine (GEE), GBIF occurrence data, and scikit-learn. Guided 5-step workflow — no coding required.
 
+![](./assets/sdm_toolbox_app.png)
+
 ---
 
 ## What it does
