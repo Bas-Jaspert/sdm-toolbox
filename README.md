@@ -48,7 +48,7 @@ An interactive desktop application for species distribution modeling (SDM) using
 ## Installation
 
 ```bash
-git clone <repo-url>
+git clone https://github.com/basnied/sdm-toolbox.git
 cd toolbox
 uv sync
 ```
