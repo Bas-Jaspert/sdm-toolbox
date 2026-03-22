@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import tempfile
+from pathlib import Path
 from typing import Callable, TYPE_CHECKING
 
 import folium
@@ -10,7 +12,7 @@ from nicegui import context as nicegui_context, ui
 
 from app.map_server import make_iframe, set_iframe_map
 from app.state import AppState
-from app.services import gbif_service
+from app.services import gbif_service, file_service
 
 if TYPE_CHECKING:
     import main as app_main
@@ -23,6 +25,7 @@ _MODES: dict[str, str] = {
     "explore": "Explore (Fast, ~300 points)",
     "deepdive": "Deep Dive (All records, slower)",
     "own": "Own Dataset",
+    "upload": "Upload File",
 }
 
 _AUSTRIA_ANIMALIA_KEY = "0013960-260226173443078"
@@ -51,6 +54,7 @@ def render(state: AppState, on_next: Callable, on_back: Callable) -> None:
     # Mutable container references so inner closures can reach widgets.
     _next_btn_ref: list[ui.button] = []
     _own_section_ref: list[ui.element] = []
+    _upload_section_ref: list[ui.element] = []
     _dataset_key_input_ref: list[ui.input] = []
     _cached_select_ref: list[ui.select] = []
     _gbif_user_input_ref: list[ui.input] = []
@@ -60,6 +64,14 @@ def render(state: AppState, on_next: Callable, on_back: Callable) -> None:
     _map_iframe_ref: list[ui.element] = []
     _fetch_btn_ref: list[ui.button] = []
     _progress_ref: list[ui.spinner] = []
+    # Upload-mode specific refs
+    _upload_status_ref: list[ui.label] = []
+    _coord_confirm_row_ref: list[ui.element] = []
+    _coord_lon_select_ref: list[ui.select] = []
+    _coord_lat_select_ref: list[ui.select] = []
+    _coord_manual_row_ref: list[ui.element] = []
+    # Temporary state for pending uploaded file
+    _pending_upload: dict = {}  # keys: "path", "df" (for CSV), "columns"
 
     # ------------------------------------------------------------------
     # Helpers
@@ -72,13 +84,128 @@ def render(state: AppState, on_next: Callable, on_back: Callable) -> None:
             _next_btn_ref[0].set_enabled(has_data)
 
     def _refresh_own_section() -> None:
-        """Show/hide the Own Dataset section based on current mode."""
+        """Show/hide mode-specific sections and fetch button based on current mode."""
         if _own_section_ref:
             _own_section_ref[0].set_visibility(state.data_mode == "own")
+        if _upload_section_ref:
+            _upload_section_ref[0].set_visibility(state.data_mode == "upload")
+        if _fetch_btn_ref:
+            _fetch_btn_ref[0].set_visibility(state.data_mode != "upload")
 
     def _on_mode_change(e) -> None:
         state.data_mode = e.value
         _refresh_own_section()
+
+    def _set_upload_status(msg: str, visible: bool = True) -> None:
+        if _upload_status_ref:
+            _upload_status_ref[0].set_text(msg)
+            _upload_status_ref[0].set_visibility(visible)
+
+    def _finalise_upload(gdf) -> None:
+        """Populate state from a parsed GeoDataFrame and render the map."""
+        state.species_gdf = gdf
+        state.data_mode = "upload"
+        n = len(gdf)
+        _set_upload_status(f"{n} presence points loaded.")
+        if n > 0:
+            _update_map(gdf)
+        _refresh_next_button()
+
+    async def _on_upload(e) -> None:
+        """Handle file upload event from ui.upload."""
+        content: bytes = await e.file.read()
+        suffix = Path(e.file.name).suffix.lower()
+
+        loop = asyncio.get_event_loop()
+        _set_upload_status("Parsing file…")
+        if _coord_confirm_row_ref:
+            _coord_confirm_row_ref[0].set_visibility(False)
+
+        try:
+            if suffix in (".csv", ".txt"):
+                with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+                    tmp.write(content)
+                    tmp_path = Path(tmp.name)
+
+                import pandas as pd
+
+                df = await loop.run_in_executor(
+                    None, lambda: pd.read_csv(tmp_path, sep=None, engine="python")
+                )
+                _pending_upload["path"] = tmp_path
+                _pending_upload["df"] = df
+                detected = file_service.detect_coord_columns(df)
+
+                if detected:
+                    lon_col, lat_col = detected
+                    _set_upload_status(
+                        f"Detected: Longitude → '{lon_col}', Latitude → '{lat_col}'"
+                    )
+                    if _coord_confirm_row_ref:
+                        _coord_confirm_row_ref[0].set_visibility(True)
+                    if _coord_lon_select_ref:
+                        _coord_lon_select_ref[0].set_options(list(df.columns))
+                        _coord_lon_select_ref[0].set_value(lon_col)
+                    if _coord_lat_select_ref:
+                        _coord_lat_select_ref[0].set_options(list(df.columns))
+                        _coord_lat_select_ref[0].set_value(lat_col)
+                else:
+                    _set_upload_status(
+                        "Could not auto-detect coordinate columns. "
+                        "Please select them manually."
+                    )
+                    if _coord_confirm_row_ref:
+                        _coord_confirm_row_ref[0].set_visibility(True)
+                    if _coord_lon_select_ref:
+                        _coord_lon_select_ref[0].set_options(list(df.columns))
+                    if _coord_lat_select_ref:
+                        _coord_lat_select_ref[0].set_options(list(df.columns))
+            else:
+                with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+                    tmp.write(content)
+                    tmp_path = Path(tmp.name)
+
+                gdf = await loop.run_in_executor(
+                    None, lambda: file_service.parse_presence_file(tmp_path)
+                )
+                _finalise_upload(gdf)
+
+        except Exception as exc:
+            _set_upload_status(f"Error: {exc}")
+
+    async def _on_confirm_coords() -> None:
+        """User confirmed (or manually selected) coordinate columns — parse CSV."""
+        lon_col = _coord_lon_select_ref[0].value if _coord_lon_select_ref else None
+        lat_col = _coord_lat_select_ref[0].value if _coord_lat_select_ref else None
+        if not lon_col or not lat_col:
+            _set_upload_status("Please select both longitude and latitude columns.")
+            return
+
+        df = _pending_upload.get("df")
+        if df is None:
+            _set_upload_status("No file loaded. Please upload again.")
+            return
+
+        try:
+            import geopandas as gpd
+
+            loop = asyncio.get_event_loop()
+
+            def _build():
+                gdf = gpd.GeoDataFrame(
+                    df,
+                    geometry=gpd.points_from_xy(df[lon_col], df[lat_col]),
+                    crs="EPSG:4326",
+                )
+                gdf = gdf.drop(columns=[lon_col, lat_col])
+                return file_service._normalise_schema(gdf)
+
+            gdf = await loop.run_in_executor(None, _build)
+            _finalise_upload(gdf)
+            if _coord_confirm_row_ref:
+                _coord_confirm_row_ref[0].set_visibility(False)
+        except Exception as exc:
+            _set_upload_status(f"Error: {exc}")
 
     def _on_dataset_key_change(e) -> None:
         state.dataset_key = e.value or ""
@@ -276,6 +403,57 @@ def render(state: AppState, on_next: Callable, on_back: Callable) -> None:
                 _save_creds_checkbox_ref.append(save_creds_checkbox)
 
             _own_section_ref.append(own_section)
+
+            # 2b. Upload File section (conditionally visible)
+            with ui.column().classes(
+                "w-full gap-2 pl-4 border-l-2 border-gray-300"
+            ) as upload_section:
+                ui.label("Upload Presence File").classes(
+                    "font-semibold text-sm text-gray-600"
+                )
+                ui.label(
+                    "Accepted: .zip (shapefile bundle), .geojson, .json, .csv, .txt"
+                ).classes("text-xs text-gray-500")
+
+                ui.upload(
+                    label="Drop file here or click to browse",
+                    on_upload=_on_upload,
+                    auto_upload=True,
+                ).classes("w-full").props(
+                    "accept='.zip,.geojson,.json,.csv,.txt' flat bordered"
+                )
+
+                # Status label always visible within upload section
+                upload_status = ui.label("").classes("text-sm")
+                upload_status.set_visibility(False)
+                _upload_status_ref.append(upload_status)
+
+                # Coordinate column row — shown after CSV upload for confirmation
+                with ui.row().classes("w-full gap-2 items-end") as coord_confirm_row:
+                    lon_select = ui.select(
+                        label="Longitude column",
+                        options=[],
+                        value=None,
+                    ).classes("flex-1")
+                    _coord_lon_select_ref.append(lon_select)
+
+                    lat_select = ui.select(
+                        label="Latitude column",
+                        options=[],
+                        value=None,
+                    ).classes("flex-1")
+                    _coord_lat_select_ref.append(lat_select)
+
+                    ui.button(
+                        "Confirm",
+                        on_click=_on_confirm_coords,
+                    ).classes("self-end")
+
+                coord_confirm_row.set_visibility(False)
+                _coord_confirm_row_ref.append(coord_confirm_row)
+                _coord_manual_row_ref.append(coord_confirm_row)
+
+            _upload_section_ref.append(upload_section)
             _refresh_own_section()
 
             # 3. Fetch button

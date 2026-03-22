@@ -137,8 +137,10 @@ def run_gee(state: AppState) -> AppState:
             else classifier_cls
         )
 
-        # 10. Classify AOI
-        classified_img = predictors.clip(aoi).classify(classifier)
+        # 10. Classify AOI — reproject to match the 30 m sampling scale
+        classified_img = (
+            predictors.reproject(crs="EPSG:4326", scale=30).clip(aoi).classify(classifier)
+        )
 
         # 11. Extract feature importances from GEE RF (best-effort)
         results_data: dict = {"overall_accuracy": [accuracy]}
@@ -193,10 +195,16 @@ def run_local(state: AppState) -> AppState:
         aoi = county_aoi if county_aoi is not None else country_aoi
 
         # 2. Extract features (downloads data to Python)
+        # Pre-reproject each layer to 30 m so sampleRegions() uses a consistent
+        # scale matching the 30 m used in classify_image_aoi().
+        _layer_30m = {
+            k: state.layer_stack[k].reproject(crs="EPSG:4326", scale=30)
+            for k in state.selected_layers
+        }
         presence_gdf, predictors = get_species_features(
             _species_gdf=state.species_gdf,
             features=state.selected_layers,
-            _layer=state.layer_stack,
+            _layer=_layer_30m,
         )
 
         # 3. Load background data

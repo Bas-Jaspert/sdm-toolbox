@@ -49,6 +49,33 @@ def initialize_gee(project: str | None = None) -> bool:
         raise RuntimeError(str(e)) from e
 
 
+def load_custom_layer(asset_id: str, band: str | None, name: str) -> "ee.Image":
+    """Load a GEE image asset as a custom predictor layer.
+
+    Parameters
+    ----------
+    asset_id:
+        Earth Engine asset path, e.g. ``"projects/my-project/assets/dem"``.
+    band:
+        Band name to select. When ``None`` or empty, the first band is used.
+    name:
+        Display name used as the key in ``state.layer_stack``.
+
+    Returns
+    -------
+    ee.Image
+        Single-band EE Image ready to be added to the layer stack.
+
+    Raises
+    ------
+    Exception
+        Propagates any EE errors (asset not found, permission denied, etc.).
+    """
+    img = ee.Image(asset_id)
+    selected = img.select(band) if band else img.select(0)
+    return selected.rename(name)
+
+
 def get_layer_information(year: int) -> dict:
     """
     Retrieve environmental predictor layers from Google Earth Engine.

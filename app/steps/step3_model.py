@@ -47,6 +47,10 @@ def render(state: AppState, on_next: Callable, on_back: Callable) -> None:
     _hyperparam_section_ref: list[ui.element] = []
     _init_btn_ref: list[ui.button] = []
     _status_label_ref: list[ui.label] = []
+    _custom_layer_status_ref: list[ui.label] = []
+    _custom_asset_id_ref: list[ui.input] = []
+    _custom_band_ref: list[ui.input] = []
+    _custom_name_ref: list[ui.input] = []
 
     # ------------------------------------------------------------------
     # Helpers
@@ -140,6 +144,68 @@ def render(state: AppState, on_next: Callable, on_back: Callable) -> None:
 
         asyncio.ensure_future(_run())
 
+    def _add_custom_layer() -> None:
+        """Load a user-supplied GEE asset and add it to the layer stack."""
+        asset_id = _custom_asset_id_ref[0].value.strip() if _custom_asset_id_ref else ""
+        band = _custom_band_ref[0].value.strip() if _custom_band_ref else ""
+        name = _custom_name_ref[0].value.strip() if _custom_name_ref else ""
+
+        if not asset_id:
+            if _custom_layer_status_ref:
+                _custom_layer_status_ref[0].set_text("Asset ID is required.")
+                _custom_layer_status_ref[0].set_visibility(True)
+            return
+        if not name:
+            if _custom_layer_status_ref:
+                _custom_layer_status_ref[0].set_text("Display name is required.")
+                _custom_layer_status_ref[0].set_visibility(True)
+            return
+
+        if _custom_layer_status_ref:
+            _custom_layer_status_ref[0].set_text("Loading layer…")
+            _custom_layer_status_ref[0].set_visibility(True)
+
+        async def _run() -> None:
+            loop = asyncio.get_event_loop()
+            try:
+                img = await loop.run_in_executor(
+                    None,
+                    lambda: gee_service.load_custom_layer(
+                        asset_id, band or None, name
+                    ),
+                )
+                if state.layer_stack is None:
+                    state.layer_stack = {}
+                state.layer_stack[name] = img
+
+                layer_names = list(state.layer_stack.keys())
+                new_selection = list(state.selected_layers) + [name]
+
+                with _client:
+                    if _layer_select_ref:
+                        _layer_select_ref[0].set_options(layer_names)
+                        _layer_select_ref[0].set_value(new_selection)
+                    state.selected_layers = new_selection
+                    if _custom_layer_status_ref:
+                        _custom_layer_status_ref[0].set_text(
+                            f"Layer '{name}' added successfully."
+                        )
+                    # Clear inputs for next use
+                    if _custom_asset_id_ref:
+                        _custom_asset_id_ref[0].set_value("")
+                    if _custom_band_ref:
+                        _custom_band_ref[0].set_value("")
+                    if _custom_name_ref:
+                        _custom_name_ref[0].set_value("")
+                    _refresh_next_button()
+
+            except Exception as exc:
+                with _client:
+                    if _custom_layer_status_ref:
+                        _custom_layer_status_ref[0].set_text(f"Error: {exc}")
+
+        asyncio.ensure_future(_run())
+
     # ------------------------------------------------------------------
     # Initial layer options — use existing stack if already populated
     # ------------------------------------------------------------------
@@ -182,6 +248,40 @@ def render(state: AppState, on_next: Callable, on_back: Callable) -> None:
                     f"GEE initialized — {len(_initial_layer_options)} layers available."
                 )
                 status_label.set_visibility(True)
+
+            # 2b. Custom GEE layer panel
+            with ui.expansion("Add custom layer", icon="add_circle").classes("w-full"):
+                with ui.column().classes("w-full gap-2"):
+                    ui.label(
+                        "Add any GEE Image asset as an extra predictor layer."
+                    ).classes("text-xs text-gray-500")
+
+                    custom_asset_id = ui.input(
+                        label="Asset ID",
+                        placeholder="projects/my-project/assets/dem",
+                    ).classes("w-full")
+                    _custom_asset_id_ref.append(custom_asset_id)
+
+                    custom_band = ui.input(
+                        label="Band (optional — leave blank for first band)",
+                        placeholder="b1",
+                    ).classes("w-full")
+                    _custom_band_ref.append(custom_band)
+
+                    custom_name = ui.input(
+                        label="Display name",
+                        placeholder="My DEM",
+                    ).classes("w-full")
+                    _custom_name_ref.append(custom_name)
+
+                    ui.button(
+                        "Add layer",
+                        on_click=_add_custom_layer,
+                    ).classes("w-full")
+
+                    custom_layer_status = ui.label("").classes("text-sm")
+                    custom_layer_status.set_visibility(False)
+                    _custom_layer_status_ref.append(custom_layer_status)
 
             # 3. Model type select
             ui.select(
