@@ -16,6 +16,7 @@ class TestAppState:
         assert state.n_trees == 100
         assert state.max_depth == 3
         assert state.train_size == 0.75
+        assert state.resolution == 30
         assert state.selected_layers == []
         assert state.layer_stack is None
         assert state.species_gdf is None
@@ -42,6 +43,7 @@ class TestAppState:
             "n_trees",
             "max_depth",
             "train_size",
+            "resolution",
             "layer_stack",
             "model",
             "results_df",
@@ -78,3 +80,8 @@ class TestAppState:
     def test_state_max_depth_positive(self):
         state = AppState()
         assert state.max_depth > 0
+
+    def test_state_resolution_default(self):
+        state = AppState()
+        assert state.resolution == 30
+        assert state.resolution > 0

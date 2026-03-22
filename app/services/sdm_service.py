@@ -88,12 +88,12 @@ def run_gee(state: AppState) -> AppState:
         presence_samples = predictors.sampleRegions(
             collection=presence_fc,
             properties=[],
-            scale=30,
+            scale=state.resolution,
         )
         background_samples = predictors.sampleRegions(
             collection=background_fc,
             properties=[],
-            scale=30,
+            scale=state.resolution,
         )
 
         # 6. Add PresAbs property (1 for presence, 0 for background)
@@ -101,7 +101,9 @@ def run_gee(state: AppState) -> AppState:
         background_samples = background_samples.map(lambda f: f.set("PresAbs", 0))
         train_fc = presence_samples.merge(background_samples)
 
-        # 7. Train in CLASSIFICATION mode so errorMatrix gets discrete labels
+        # 7. Train classifier; RF uses CLASSIFICATION mode so errorMatrix gets
+        #    discrete labels. Maxent only supports PROBABILITY mode (GEE constraint),
+        #    so we threshold at 0.5 server-side before calling errorMatrix.
         if state.model_type == "rf":
             classifier_cls = (
                 ee.Classifier.smileRandomForest(
@@ -124,22 +126,30 @@ def run_gee(state: AppState) -> AppState:
 
         # 8. Accuracy from discrete classifications
         classified_train = train_fc.classify(classifier_cls)
+        if state.model_type == "maxent":
+            # Maxent outputs "probability" (float 0-1); derive discrete labels
+            # by thresholding at 0.5 so errorMatrix("PresAbs", "classification") works.
+            classified_train = classified_train.map(
+                lambda f: f.set(
+                    "classification",
+                    f.getNumber("probability").gte(0.5).toInt(),
+                )
+            )
         accuracy = (
             classified_train.errorMatrix("PresAbs", "classification")
             .accuracy()
             .getInfo()
         )
 
-        # 9. Switch to PROBABILITY for the suitability map (RF only)
-        classifier = (
-            classifier_cls.setOutputMode("PROBABILITY")
-            if state.model_type == "rf"
-            else classifier_cls
-        )
+        # 9. Switch to PROBABILITY for the suitability map
+        classifier = classifier_cls.setOutputMode("PROBABILITY")
 
-        # 10. Classify AOI — reproject to match the 30 m sampling scale
+        # 10. Classify AOI — reproject to state.resolution to match the sampling scale
         classified_img = (
-            predictors.reproject(crs="EPSG:4326", scale=30).clip(aoi).classify(classifier)
+            predictors.reproject(crs="EPSG:4326", scale=state.resolution)
+            .clip(aoi)
+            .classify(classifier)
+            .select("probability")
         )
 
         # 11. Extract feature importances from GEE RF (best-effort)
@@ -195,16 +205,17 @@ def run_local(state: AppState) -> AppState:
         aoi = county_aoi if county_aoi is not None else country_aoi
 
         # 2. Extract features (downloads data to Python)
-        # Pre-reproject each layer to 30 m so sampleRegions() uses a consistent
-        # scale matching the 30 m used in classify_image_aoi().
-        _layer_30m = {
-            k: state.layer_stack[k].reproject(crs="EPSG:4326", scale=30)
+        # Pre-reproject each layer to state.resolution for feature sampling.
+        # classify_image_aoi() is a frozen utility that always predicts at 30 m,
+        # so sampling and prediction scales will differ when state.resolution != 30.
+        _layer_resampled = {
+            k: state.layer_stack[k].reproject(crs="EPSG:4326", scale=state.resolution)
             for k in state.selected_layers
         }
         presence_gdf, predictors = get_species_features(
             _species_gdf=state.species_gdf,
             features=state.selected_layers,
-            _layer=_layer_30m,
+            _layer=_layer_resampled,
         )
 
         # 3. Load background data
@@ -303,7 +314,7 @@ def run_embedding(state: AppState) -> AppState:
         presence_samples = mosaic.sampleRegions(
             collection=presence_fc,
             properties=[],
-            scale=30,
+            scale=30,  # fixed at native embedding tile resolution
         )
 
         # 4. Compute per-band mean across all presence samples → mean embedding vector

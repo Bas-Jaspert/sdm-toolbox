@@ -10,8 +10,8 @@ class AppState:
     species: str = ""
     country_code: str = ""
     county_name: str = ""
-    year_start: int = 2015
-    year_end: int = 2024
+    year_start: int = 2018
+    year_end: int = 2025
 
     # Step 2
     data_mode: str = "explore"  # "explore" | "deepdive" | "own"
@@ -26,6 +26,7 @@ class AppState:
     n_trees: int = 100
     max_depth: int = 3
     train_size: float = 0.75
+    resolution: int = 100
     layer_stack: Optional[dict[str, Any]] = None
 
     # Step 4

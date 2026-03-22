@@ -10,6 +10,7 @@ import geopandas as gpd
 import httpx
 from nicegui import context as nicegui_context, ui
 
+from app.services.wikipedia_service import SpeciesSummary, fetch_species_summary
 from app.state import AppState
 
 # ---------------------------------------------------------------------------
@@ -65,7 +66,11 @@ def _nuts2_options_for_country(country_code: str) -> dict[str, str]:
 # ---------------------------------------------------------------------------
 
 
-def render(state: AppState, on_next: Callable) -> None:
+def render(
+    state: AppState,
+    on_next: Callable,
+    on_summary_ready: Callable[[SpeciesSummary | None], None] | None = None,
+) -> None:
     """Render Step 1: Region & Species.
 
     Parameters
@@ -74,6 +79,10 @@ def render(state: AppState, on_next: Callable) -> None:
         Shared ``AppState`` instance; mutations are reflected app-wide.
     on_next:
         Callable invoked when the user clicks the "Next →" button.
+    on_summary_ready:
+        Optional callback fired with the fetched ``SpeciesSummary`` (or
+        ``None`` when the species is cleared or the fetch fails).  Used by
+        the main layout to update the persistent species header.
     """
 
     _client = nicegui_context.client
@@ -81,6 +90,7 @@ def render(state: AppState, on_next: Callable) -> None:
     # Mutable container used as a closure reference so inner functions can
     # reach widgets that are created after the function is defined.
     _debounce_tasks: list[asyncio.Task] = []
+    _summary_tasks: list[asyncio.Task] = []
     _next_btn_ref: list[ui.button] = []
     _county_select_ref: list[ui.select] = []
 
@@ -93,6 +103,21 @@ def render(state: AppState, on_next: Callable) -> None:
         enabled = bool(state.species) and bool(state.country_code)
         if _next_btn_ref:
             _next_btn_ref[0].set_enabled(enabled)
+
+    def _hide_summary() -> None:
+        if on_summary_ready:
+            on_summary_ready(None)
+
+    async def _fetch_and_show_summary(species_name: str) -> None:
+        try:
+            summary = await fetch_species_summary(species_name)
+            with _client:
+                if on_summary_ready:
+                    on_summary_ready(summary)
+        except Exception:
+            with _client:
+                if on_summary_ready:
+                    on_summary_ready(None)
 
     async def _fetch_suggestions(value: str) -> None:
         """Call GBIF suggest API and populate the suggestions dropdown."""
@@ -123,6 +148,8 @@ def render(state: AppState, on_next: Callable) -> None:
     def _on_species_change(e) -> None:
         """Handle every keystroke in the species input."""
         state.species = e.value or ""
+        if not e.value or len(e.value) < 2:
+            _hide_summary()
         _refresh_next_button()
         # Cancel any pending debounce task and schedule a new one.
         for t in _debounce_tasks:
@@ -142,6 +169,12 @@ def render(state: AppState, on_next: Callable) -> None:
             _species_input_ref[0].value = e.value
             _suggestions_ref[0].set_visibility(False)
             _refresh_next_button()
+            for t in _summary_tasks:
+                t.cancel()
+            _summary_tasks.clear()
+            _summary_tasks.append(
+                asyncio.ensure_future(_fetch_and_show_summary(e.value))
+            )
 
     def _on_country_change(e) -> None:
         """Repopulate the county dropdown and update state."""

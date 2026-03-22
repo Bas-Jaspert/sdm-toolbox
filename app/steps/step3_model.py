@@ -9,6 +9,7 @@ from nicegui import context as nicegui_context, ui
 
 from app.state import AppState
 from app.services import gee_service
+from app.services.layer_metadata import get_catalogue_by_category
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -18,6 +19,14 @@ _MODEL_OPTIONS: dict[str, str] = {
     "rf": "Random Forest",
     "maxent": "Maxent",
     "embedding": "Embedding",
+}
+
+_RESOLUTION_OPTIONS: dict[int, str] = {
+    10: "10 m",
+    30: "30 m",
+    100: "100 m",
+    300: "300 m",
+    1000: "1000 m",
 }
 
 
@@ -96,6 +105,10 @@ def render(state: AppState, on_next: Callable, on_back: Callable) -> None:
         except (TypeError, ValueError):
             pass
 
+    def _on_resolution_change(e) -> None:
+        if e.value in _RESOLUTION_OPTIONS:
+            state.resolution = e.value
+
     def _init_layers() -> None:
         """Trigger GEE layer initialisation in a thread executor."""
 
@@ -104,7 +117,7 @@ def render(state: AppState, on_next: Callable, on_back: Callable) -> None:
             _status_label_ref[0].set_visibility(True)
 
         if _init_btn_ref:
-            _init_btn_ref[0].set_enabled(False)
+            _init_btn_ref[0].set_visibility(False)
 
         async def _run() -> None:
             loop = asyncio.get_event_loop()
@@ -136,10 +149,10 @@ def render(state: AppState, on_next: Callable, on_back: Callable) -> None:
                 with _client:
                     if _status_label_ref:
                         _status_label_ref[0].set_text(f"Error: {exc}")
+                    if _init_btn_ref:
+                        _init_btn_ref[0].set_visibility(True)
             finally:
                 with _client:
-                    if _init_btn_ref:
-                        _init_btn_ref[0].set_enabled(True)
                     _refresh_next_button()
 
         asyncio.ensure_future(_run())
@@ -215,39 +228,72 @@ def render(state: AppState, on_next: Callable, on_back: Callable) -> None:
     )
 
     # ------------------------------------------------------------------
+    # Layer catalogue dialog
+    # ------------------------------------------------------------------
+
+    def _open_layer_catalogue() -> None:
+        catalogue = get_catalogue_by_category()
+        with ui.dialog() as dlg, ui.card().classes(
+            "w-full max-w-2xl max-h-screen overflow-y-auto p-6"
+        ):
+            ui.label("Environmental Layer Catalogue").classes(
+                "text-xl font-bold mb-4"
+            )
+            for category, items in catalogue.items():
+                ui.label(category).classes(
+                    "text-base font-semibold mt-4 mb-1 text-primary"
+                )
+                ui.separator()
+                for layer_name, meta in items:
+                    with ui.column().classes("gap-0 my-1"):
+                        ui.label(layer_name).classes("font-mono font-semibold text-sm")
+                        ui.label(meta.description).classes("text-sm")
+                        ui.label(
+                            f"Units: {meta.units}  ·  Source: {meta.data_source}"
+                        ).classes("text-xs text-gray-500")
+            ui.button("Close", on_click=dlg.close).classes("mt-4 w-full")
+        dlg.open()
+
+    # ------------------------------------------------------------------
     # UI layout
     # ------------------------------------------------------------------
     with ui.card().classes("w-full max-w-xl mx-auto"):
         ui.label("Step 3 — Layers & Model").classes("text-xl font-bold mb-4")
 
         with ui.column().classes("w-full gap-4"):
-            # 1. Layer multi-select
-            layer_select = ui.select(
-                label="Environmental Layers",
-                multiple=True,
-                options=_initial_layer_options,
-                value=state.selected_layers,
-                on_change=_on_layer_change,
-            ).classes("w-full").props("use-chips")
-            _layer_select_ref.append(layer_select)
+            # 1. Layer multi-select + catalogue info button
+            with ui.row().classes("w-full items-end gap-2"):
+                layer_select = ui.select(
+                    label="Environmental Layers",
+                    multiple=True,
+                    options=_initial_layer_options,
+                    value=state.selected_layers,
+                    on_change=_on_layer_change,
+                ).classes("flex-1").props("use-chips")
+                _layer_select_ref.append(layer_select)
 
-            # 2. Initialize GEE Layers button + status
-            init_btn = ui.button(
-                "Initialize GEE Layers",
+                ui.button(
+                    icon="info",
+                    on_click=_open_layer_catalogue,
+                ).props("flat round").tooltip("Environmental layer catalogue")
+
+            # 2. Status label + hidden retry button (shown only on error)
+            status_label = ui.label("Initializing GEE layers…").classes("text-sm")
+            status_label.set_visibility(True)
+            _status_label_ref.append(status_label)
+
+            retry_btn = ui.button(
+                "Retry",
                 on_click=_init_layers,
             ).classes("w-full")
-            _init_btn_ref.append(init_btn)
-
-            status_label = ui.label("").classes("text-sm")
-            status_label.set_visibility(False)
-            _status_label_ref.append(status_label)
+            retry_btn.set_visibility(False)
+            _init_btn_ref.append(retry_btn)
 
             # Pre-populate status if stack is already loaded
             if state.layer_stack is not None:
                 status_label.set_text(
                     f"GEE initialized — {len(_initial_layer_options)} layers available."
                 )
-                status_label.set_visibility(True)
 
             # 2b. Custom GEE layer panel
             with ui.expansion("Add custom layer", icon="add_circle").classes("w-full"):
@@ -333,6 +379,13 @@ def render(state: AppState, on_next: Callable, on_back: Callable) -> None:
                     on_change=_on_train_size_change,
                 ).classes("w-full")
 
+                ui.select(
+                    label="Resolution (m)",
+                    options=_RESOLUTION_OPTIONS,
+                    value=state.resolution,
+                    on_change=_on_resolution_change,
+                ).classes("w-full")
+
             _hyperparam_section_ref.append(hyperparam_section)
 
             # Reflect initial visibility
@@ -350,3 +403,8 @@ def render(state: AppState, on_next: Callable, on_back: Callable) -> None:
 
             # Reflect initial state
             _refresh_next_button()
+
+    # Auto-initialize GEE layers when entering the step for the first time.
+    # _init_layers() schedules an async coroutine and returns immediately.
+    if state.layer_stack is None:
+        _init_layers()

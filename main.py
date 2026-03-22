@@ -70,6 +70,7 @@ def _save_gbif_credentials(user: str, pwd: str) -> None:
 
 
 from app.services import gee_service
+from app.services.wikipedia_service import SpeciesSummary
 from app.state import AppState
 from app.steps import step1_region, step2_data, step3_model, step4_run, step5_results
 
@@ -99,6 +100,10 @@ async def main_page() -> None:
     current_step = [0]
     content_ref: list[ui.column] = []
     step_pill_refs: list[list[ui.label]] = [[]]
+    _species_header_ref: list[ui.card] = []
+    _header_image_ref: list[ui.image] = []
+    _header_title_ref: list[ui.label] = []
+    _header_extract_ref: list[ui.label] = []
 
     # ------------------------------------------------------------------
     # Layout skeleton — rendered immediately so the page loads fast
@@ -106,8 +111,38 @@ async def main_page() -> None:
 
     with ui.column().classes("w-full min-h-screen p-4"):
         stepper_header = ui.row().classes("w-full justify-center gap-2 mb-6 flex-wrap")
+
+        # Persistent species header — updated by Step 1 callback
+        with ui.card().classes("w-full max-w-xl mx-auto mb-4 q-pa-sm") as species_header_card:
+            with ui.row().classes("items-start gap-3"):
+                header_image = ui.image("").classes("w-12 h-12 object-cover rounded flex-shrink-0")
+                header_image.set_visibility(False)
+                with ui.column().classes("flex-1 gap-1"):
+                    header_title = ui.label("").classes("font-semibold text-sm")
+                    header_extract = ui.label("").classes("text-xs text-grey-7")
+        species_header_card.set_visibility(False)
+        _species_header_ref.append(species_header_card)
+        _header_image_ref.append(header_image)
+        _header_title_ref.append(header_title)
+        _header_extract_ref.append(header_extract)
+
         content = ui.column().classes("w-full")
         content_ref.append(content)
+
+    def _update_species_header(summary: SpeciesSummary | None) -> None:
+        if not _species_header_ref:
+            return
+        if summary is None:
+            _species_header_ref[0].set_visibility(False)
+            return
+        _header_title_ref[0].set_text(summary.title)
+        _header_extract_ref[0].set_text(summary.extract)
+        if summary.thumbnail_url:
+            _header_image_ref[0].source = summary.thumbnail_url
+            _header_image_ref[0].set_visibility(True)
+        else:
+            _header_image_ref[0].set_visibility(False)
+        _species_header_ref[0].set_visibility(True)
 
     # ------------------------------------------------------------------
     # GEE init (background task — runs after page is rendered)
@@ -241,7 +276,11 @@ async def main_page() -> None:
 
             try:
                 if step_index == 0:
-                    fn(state, on_next=lambda: navigate(1))
+                    fn(
+                        state,
+                        on_next=lambda: navigate(1),
+                        on_summary_ready=_update_species_header,
+                    )
                 elif step_index == 4:
                     fn(state, on_back=lambda: navigate(3))
                 else:
