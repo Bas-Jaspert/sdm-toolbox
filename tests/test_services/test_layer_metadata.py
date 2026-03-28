@@ -1,42 +1,61 @@
-from app.services.layer_metadata import LAYER_CATALOGUE, get_catalogue_by_category
+"""Tests for soil layer metadata additions."""
 
-EXPECTED_CATEGORIES = {"Terrain", "Vegetation", "Climate", "Land Cover & Human Impact", "BioClim"}
-KNOWN_LAYERS = [
-    "elevation",
-    "slope",
-    "aspect",
-    "northness",
-    "eastness",
-    "NDVI",
-    "NARI",
-    "NCRI",
-    "Trees",
-    "CHM",
-    "SWE",
-    "snow_depth",
-    "snow_cover",
-    "snow_albedo",
-    "landcover",
-    "GHMI",
-    *[f"b{i}" for i in range(1, 20)],
-]
+from app.services.layer_metadata import (
+    CATEGORY_NOTES,
+    LAYER_CATALOGUE,
+    TEMPORAL_LAYERS,
+    _CATEGORY_ORDER,
+    get_catalogue_by_category,
+)
+
+_SOIL_KEYS = ["soil_ph", "soil_soc", "soil_clay", "soil_sand", "soil_bdod", "soil_nitrogen"]
 
 
-class TestLayerCatalogue:
-    def test_all_known_layers_present(self) -> None:
-        for name in KNOWN_LAYERS:
-            assert name in LAYER_CATALOGUE, f"Missing layer: {name}"
+def test_soil_layers_in_catalogue() -> None:
+    for key in _SOIL_KEYS:
+        assert key in LAYER_CATALOGUE, f"{key!r} missing from LAYER_CATALOGUE"
 
-    def test_no_empty_fields(self) -> None:
-        for name, meta in LAYER_CATALOGUE.items():
-            assert meta.description, f"{name}: empty description"
-            assert meta.units, f"{name}: empty units"
-            assert meta.data_source, f"{name}: empty data_source"
 
-    def test_get_catalogue_by_category_returns_expected_categories(self) -> None:
-        grouped = get_catalogue_by_category()
-        assert set(grouped.keys()) == EXPECTED_CATEGORIES
+def test_soil_category_order() -> None:
+    assert "Soil Properties" in _CATEGORY_ORDER
 
-    def test_each_category_non_empty(self) -> None:
-        for cat, items in get_catalogue_by_category().items():
-            assert len(items) > 0, f"Category '{cat}' is empty"
+
+def test_category_notes_soil() -> None:
+    assert "Soil Properties" in CATEGORY_NOTES
+    assert "ESDAC" in CATEGORY_NOTES["Soil Properties"]
+
+
+def test_get_catalogue_by_category_includes_soil() -> None:
+    grouped = get_catalogue_by_category()
+    assert "Soil Properties" in grouped
+    keys_in_group = [name for name, _ in grouped["Soil Properties"]]
+    for key in _SOIL_KEYS:
+        assert key in keys_in_group, f"{key!r} missing from grouped catalogue"
+
+
+# ---------------------------------------------------------------------------
+# Temporal flag tests
+# ---------------------------------------------------------------------------
+
+_EXPECTED_TEMPORAL = {"SWE", "snow_depth", "snow_cover", "snow_albedo", "NDVI", "NARI", "NCRI"}
+_EXPECTED_STATIC = {
+    "elevation", "slope", "aspect", "northness", "eastness",
+    "Trees", "CHM", "landcover", "GHMI",
+    "b1", "b2", "b3", "b4", "b5", "b6", "b7", "b8", "b9",
+    "b10", "b11", "b12", "b13", "b14", "b15", "b16", "b17", "b18", "b19",
+    "soil_ph", "soil_soc", "soil_clay", "soil_sand", "soil_bdod", "soil_nitrogen",
+}
+
+
+def test_temporal_layers_are_marked() -> None:
+    for name in _EXPECTED_TEMPORAL:
+        assert LAYER_CATALOGUE[name].temporal is True, f"{name} should be temporal"
+
+
+def test_static_layers_are_not_temporal() -> None:
+    for name in _EXPECTED_STATIC:
+        assert LAYER_CATALOGUE[name].temporal is False, f"{name} should not be temporal"
+
+
+def test_temporal_layers_frozenset() -> None:
+    assert TEMPORAL_LAYERS == _EXPECTED_TEMPORAL

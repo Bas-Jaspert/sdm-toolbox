@@ -287,6 +287,16 @@ def render(state: AppState, on_next: Callable, on_back: Callable) -> None:
 
         async def _run() -> None:
             loop = asyncio.get_event_loop()
+
+            def _progress(msg: str) -> None:
+                async def _ui() -> None:
+                    with _client:
+                        if _status_label_ref:
+                            _status_label_ref[0].set_text(msg)
+                            _status_label_ref[0].set_visibility(True)
+
+                asyncio.run_coroutine_threadsafe(_ui(), loop)
+
             try:
 
                 def _fetch():
@@ -299,6 +309,7 @@ def render(state: AppState, on_next: Callable, on_back: Callable) -> None:
                         state.dataset_key,
                         state.gbif_user,
                         state.gbif_pwd,
+                        progress_callback=_progress,
                     )
 
                 gdf = await loop.run_in_executor(

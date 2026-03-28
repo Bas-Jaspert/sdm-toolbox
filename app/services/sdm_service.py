@@ -1,49 +1,29 @@
 """
 SDM service module.
 
-Provides three SDM pipeline functions:
-- run_gee(): GEE-native pipeline (Explore / Own Dataset modes, server-side)
-- run_local(): sklearn pipeline (Deep Dive mode, data downloaded to Python)
+Provides two SDM pipeline functions:
+- run_gee(): GEE-native pipeline (all data modes, server-side)
 - run_embedding(): Dot-product embedding pipeline (Google Satellite Embedding V1, server-side)
 """
 
-from pathlib import Path
-from typing import Optional
-
-import geopandas as gpd
 from app.state import AppState
-from toolbox.utils import (
-    get_aoi_from_nuts,
-    get_species_features,
-    compute_sdm,
-    classify_image_aoi,
-    load_background_data,
-)
+from app.services import gee_service
+from app.services.gbif_service import _cleanup_gdf as _cleanup_gdf_for_gee
+from app.services.layer_metadata import TEMPORAL_LAYERS
+from toolbox.utils import get_aoi_from_nuts
 import geemap
 import ee
 import pandas as pd
 from sklearn.metrics import roc_auc_score
 
-_BG_PATH: Path = Path(__file__).parents[2] / "assets" / "background_data.csv"
-
-
-def _cleanup_gdf_for_gee(gdf: Optional[gpd.GeoDataFrame]) -> Optional[gpd.GeoDataFrame]:
-    """Convert non-geometry columns to strings for GeoJSON/EE compatibility."""
-    if gdf is None or gdf.empty:
-        return gdf
-    for col in gdf.columns:
-        if col == "geometry":
-            continue
-        gdf[col] = gdf[col].apply(lambda x: str(x) if pd.notna(x) else None)
-    return gdf
-
 
 def run_gee(state: AppState) -> AppState:
     """
-    GEE-native SDM pipeline for Explore and Own Dataset modes.
+    GEE-native SDM pipeline for all data modes.
 
-    All computation stays server-side; no data is downloaded to Python.
-    Supports Random Forest and Maxent classifiers.
+    All computation stays server-side; only a small eval sample (~200 scores)
+    is downloaded to Python to compute ROC-AUC.  Supports Random Forest and
+    Maxent classifiers.
 
     Parameters
     ----------
@@ -81,29 +61,72 @@ def run_gee(state: AppState) -> AppState:
             points=n_presence,
         )
 
-        # 4. Stack predictor layers
+        # 4. Split selected layers into temporal (year-varying) and static
+        selected_temporal = [name for name in state.selected_layers if name in TEMPORAL_LAYERS]
+        selected_static = [name for name in state.selected_layers if name not in TEMPORAL_LAYERS]
+
+        # 5a. Stack predictor layers for AOI classification map and background
+        #     sampling — always uses state.layer_stack (loaded at year_start).
         predictors = ee.Image.cat([state.layer_stack[k] for k in state.selected_layers])
 
-        # 5. Sample features at presence and background points (server-side)
-        presence_samples = predictors.sampleRegions(
-            collection=presence_fc,
-            properties=[],
-            scale=state.resolution,
-        )
+        # 5b. Sample presence points — per-observation-year when temporal layers
+        #     are selected, single-image fast path otherwise.
+        excluded_count = 0
+        if not selected_temporal:
+            presence_samples = predictors.sampleRegions(
+                collection=presence_fc,
+                properties=[],
+                scale=state.resolution,
+            )
+        else:
+            static_img = (
+                ee.Image.cat([state.layer_stack[name] for name in selected_static])
+                if selected_static
+                else None
+            )
+            unique_years = sorted(
+                int(y) for y in state.species_gdf["year"].dropna().unique()
+            )
+            per_year: list = []
+            for year in unique_years:
+                year_layers = gee_service.get_layer_information(year)
+                temporal_img = ee.Image.cat([year_layers[name] for name in selected_temporal])
+                year_predictors = (
+                    ee.Image.cat([static_img, temporal_img])
+                    if static_img is not None
+                    else temporal_img
+                )
+                year_fc = presence_fc.filter(ee.Filter.eq("year", year))
+                samples = year_predictors.sampleRegions(
+                    collection=year_fc,
+                    properties=[],
+                    scale=state.resolution,
+                ).filter(ee.Filter.notNull(selected_temporal))
+                per_year.append(samples)
+
+            presence_samples = ee.FeatureCollection(per_year).flatten()
+            excluded_count = n_presence - presence_samples.size().getInfo()
+
+        # 5c. Sample background points from year_start layer stack (unchanged)
         background_samples = predictors.sampleRegions(
             collection=background_fc,
             properties=[],
             scale=state.resolution,
         )
 
-        # 6. Add PresAbs property (1 for presence, 0 for background)
+        # 6. Add PresAbs labels and split 75 / 25 for train / holdout eval.
+        #    Using randomColumn ensures a reproducible, stratified-like split without
+        #    an extra GEE round-trip.
         presence_samples = presence_samples.map(lambda f: f.set("PresAbs", 1))
         background_samples = background_samples.map(lambda f: f.set("PresAbs", 0))
-        train_fc = presence_samples.merge(background_samples)
+        all_fc = presence_samples.merge(background_samples).randomColumn(seed=42)
+        train_fc = all_fc.filter(ee.Filter.lt("random", 0.75))
+        eval_fc = all_fc.filter(ee.Filter.gte("random", 0.75))
 
-        # 7. Train classifier; RF uses CLASSIFICATION mode so errorMatrix gets
-        #    discrete labels. Maxent only supports PROBABILITY mode (GEE constraint),
-        #    so we threshold at 0.5 server-side before calling errorMatrix.
+        # 7. Train classifier on the 75 % split.
+        #    RF uses CLASSIFICATION mode so errorMatrix gets discrete labels.
+        #    Maxent only supports PROBABILITY mode (GEE constraint), so we
+        #    threshold at 0.5 server-side before calling errorMatrix.
         if state.model_type == "rf":
             classifier_cls = (
                 ee.Classifier.smileRandomForest(
@@ -124,11 +147,9 @@ def run_gee(state: AppState) -> AppState:
                 "Use 'rf' or 'maxent'."
             )
 
-        # 8. Accuracy from discrete classifications
+        # 8. Overall accuracy on the training split (discrete labels).
         classified_train = train_fc.classify(classifier_cls)
         if state.model_type == "maxent":
-            # Maxent outputs "probability" (float 0-1); derive discrete labels
-            # by thresholding at 0.5 so errorMatrix("PresAbs", "classification") works.
             classified_train = classified_train.map(
                 lambda f: f.set(
                     "classification",
@@ -141,28 +162,51 @@ def run_gee(state: AppState) -> AppState:
             .getInfo()
         )
 
-        # 9. Switch to PROBABILITY for the suitability map
+        # 9. Switch to PROBABILITY for the suitability map and AUC eval.
         classifier = classifier_cls.setOutputMode("PROBABILITY")
 
-        # 10. Classify AOI — reproject to state.resolution to match the sampling scale
-        classified_img = (
-            predictors.reproject(crs="EPSG:4326", scale=state.resolution)
-            .clip(aoi)
-            .classify(classifier)
-            .select("probability")
-        )
+        # 10. Classify AOI — no forced reproject; GEE uses adaptive pyramid rendering.
+        if state.model_type == "rf":
+            classified_img = predictors.clip(aoi).classify(classifier)
+        elif state.model_type == "maxent":
+            classified_img = (
+                predictors.clip(aoi).classify(classifier).select("probability")
+            )
 
-        # 11. Extract feature importances from GEE RF (best-effort)
-        results_data: dict = {"overall_accuracy": [accuracy]}
+        # 11. ROC-AUC on the 25 % holdout eval set.
+        #     Rename the probability output to "score" for a uniform column name,
+        #     then download only that tiny FeatureCollection (~1 KB).
+        results_data: dict = {
+            "overall_accuracy": [accuracy],
+            "excluded_presence_count": [excluded_count],
+        }
+        try:
+            if state.model_type == "rf":
+                eval_scored = eval_fc.classify(classifier).map(
+                    lambda f: f.set("score", f.getNumber("classification"))
+                )
+            else:
+                eval_scored = eval_fc.classify(classifier).map(
+                    lambda f: f.set("score", f.getNumber("probability"))
+                )
+            eval_df = geemap.ee_to_df(eval_scored.select(["PresAbs", "score"]))
+            if not eval_df.empty and "score" in eval_df.columns:
+                results_data["roc_auc"] = [
+                    roc_auc_score(eval_df["PresAbs"], eval_df["score"])
+                ]
+        except Exception:
+            pass  # AUC not critical; overall_accuracy is always present
+
+        # 12. Extract feature importances from GEE RF (best-effort).
         if state.model_type == "rf":
             try:
                 importance = classifier_cls.explain().getInfo().get("importance", {})
                 for feat, imp in importance.items():
                     results_data[feat] = [imp]
             except Exception:
-                pass  # importance not available; accuracy-only results are fine
+                pass
 
-        # 12. Store results
+        # 13. Store results
         state.model = classifier
         state.classified_img = classified_img
         state.results_df = pd.DataFrame(results_data)
@@ -172,92 +216,6 @@ def run_gee(state: AppState) -> AppState:
 
     return state
 
-
-def run_local(state: AppState) -> AppState:
-    """
-    sklearn SDM pipeline for Deep Dive mode.
-
-    Downloads sampled feature data to Python and trains a local sklearn model,
-    then re-applies it server-side via GEE for classification.
-
-    Parameters
-    ----------
-    state : AppState
-        Current application state.  Must have species_gdf, country_code,
-        selected_layers, layer_stack, model_type, n_trees, max_depth,
-        and train_size set.
-
-    Returns
-    -------
-    AppState
-        Updated state with model, classified_img, and results_df populated.
-
-    Raises
-    ------
-    RuntimeError
-        If the local SDM pipeline fails for any reason.
-    """
-    try:
-        # 1. Get AOI
-        country_aoi, county_aoi = get_aoi_from_nuts(
-            state.country_code, state.county_name or None
-        )
-        aoi = county_aoi if county_aoi is not None else country_aoi
-
-        # 2. Extract features (downloads data to Python)
-        # Pre-reproject each layer to state.resolution for feature sampling.
-        # classify_image_aoi() is a frozen utility that always predicts at 30 m,
-        # so sampling and prediction scales will differ when state.resolution != 30.
-        _layer_resampled = {
-            k: state.layer_stack[k].reproject(crs="EPSG:4326", scale=state.resolution)
-            for k in state.selected_layers
-        }
-        presence_gdf, predictors = get_species_features(
-            _species_gdf=state.species_gdf,
-            features=state.selected_layers,
-            _layer=_layer_resampled,
-        )
-
-        # 3. Load background data
-        background_gdf = load_background_data(path=_BG_PATH)
-
-        # Map short model_type keys to the string names used by compute_sdm()
-        model_type_map = {
-            "rf": "Random Forest",
-            "maxent": "Maxent",
-            "embedding": "Embedding",
-        }
-
-        # 4. Train local model
-        model, results_df, ml_gdf = compute_sdm(
-            presence=presence_gdf,
-            background=background_gdf,
-            features=state.selected_layers,
-            model_type=model_type_map[state.model_type],
-            n_trees=state.n_trees,
-            tree_depth=state.max_depth,
-            train_size=state.train_size,
-        )
-
-        # 5. Classify AOI
-        classified_img = classify_image_aoi(
-            image=predictors,
-            aoi=aoi,
-            ml_gdf=ml_gdf,
-            model=model,
-            features=state.selected_layers,
-        )
-
-        # 6. Store results
-        state.model = model
-        state.results_df = results_df
-        state.classified_img = classified_img
-        state.ml_gdf = ml_gdf
-
-    except Exception as e:
-        raise RuntimeError(f"Local (sklearn) SDM pipeline failed: {str(e)}") from e
-
-    return state
 
 
 def run_embedding(state: AppState) -> AppState:

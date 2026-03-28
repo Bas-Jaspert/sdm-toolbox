@@ -381,7 +381,41 @@ def get_layer_information(year: int):
         "NARI": gee_calculate_scrub_index("nari", year).rename("NARI"),
         "NCRI": gee_calculate_scrub_index("ncri", year).rename("NCRI"),
     }
-    return {**layer, **BIOCLIM}
+    soil = {
+        # SoilGrids 250 m v2 (ISRIC), 0–5 cm depth, mean.
+        # Stored as scaled integers; converted to physical units here.
+        "soil_ph": ee.Image("projects/soilgrids-isric/phh2o_mean")
+        .select("phh2o_0-5cm_mean")
+        .multiply(0.1)
+        .toFloat()
+        .rename("soil_ph"),  # pH × 10  →  pH
+        "soil_soc": ee.Image("projects/soilgrids-isric/soc_mean")
+        .select("soc_0-5cm_mean")
+        .multiply(0.1)
+        .toFloat()
+        .rename("soil_soc"),  # dg/kg  →  g/kg
+        "soil_clay": ee.Image("projects/soilgrids-isric/clay_mean")
+        .select("clay_0-5cm_mean")
+        .multiply(0.1)
+        .toFloat()
+        .rename("soil_clay"),  # g/kg × 10  →  g/kg
+        "soil_sand": ee.Image("projects/soilgrids-isric/sand_mean")
+        .select("sand_0-5cm_mean")
+        .multiply(0.1)
+        .toFloat()
+        .rename("soil_sand"),  # g/kg × 10  →  g/kg
+        "soil_bdod": ee.Image("projects/soilgrids-isric/bdod_mean")
+        .select("bdod_0-5cm_mean")
+        .multiply(0.01)
+        .toFloat()
+        .rename("soil_bdod"),  # cg/cm³  →  g/cm³
+        "soil_nitrogen": ee.Image("projects/soilgrids-isric/nitrogen_mean")
+        .select("nitrogen_0-5cm_mean")
+        .multiply(0.01)
+        .toFloat()
+        .rename("soil_nitrogen"),  # cg/kg  →  g/kg
+    }
+    return {**layer, **BIOCLIM, **soil}
 
 
 def get_layer_visualization_params(layer_name: str):

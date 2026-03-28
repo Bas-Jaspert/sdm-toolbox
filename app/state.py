@@ -33,9 +33,6 @@ class AppState:
     model: Any = None
     results_df: Optional[pd.DataFrame] = None
     classified_img: Any = None
-    ml_gdf: Optional[gpd.GeoDataFrame] = (
-        None  # combined presence+background used for training
-    )
 
     # Step 5
     whatif_offsets: dict = field(default_factory=dict)

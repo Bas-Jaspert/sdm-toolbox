@@ -80,8 +80,9 @@ def get_layer_information(year: int) -> dict:
     """
     Retrieve environmental predictor layers from Google Earth Engine.
 
-    This is a thin wrapper around toolbox.utils.get_layer_information()
-    that provides a consistent interface from the gee_service module.
+    Wraps ``toolbox.utils.get_layer_information()`` and extends the result
+    with soil property layers from SoilGrids 250 m v2 (ISRIC), depth 0–5 cm,
+    mean uncertainty band. Values are scaled to physical units at load time.
 
     Parameters
     ----------
@@ -94,7 +95,7 @@ def get_layer_information(year: int) -> dict:
     dict
         A dictionary of EE Image objects, keyed by layer name.
         Includes elevation, slope, aspect, vegetation indices,
-        climate variables, and more.
+        climate variables, BioClim, and SoilGrids soil properties.
 
     Raises
     ------

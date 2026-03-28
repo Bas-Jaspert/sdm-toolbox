@@ -41,147 +41,16 @@ def _make_state(model_type: str = "rf", data_mode: str = "explore"):
 
 
 # ---------------------------------------------------------------------------
-# Issue 1: run_gee() must reproject predictors to 30 m before classify
-# ---------------------------------------------------------------------------
-
-
-def test_run_gee_reprojects_predictors_before_classify():
-    """Predictor stack must be reprojected to EPSG:4326 / 30 m before .classify()."""
-    state = _make_state(model_type="rf", data_mode="explore")
-
-    predictor_img = _make_ee_chain()
-    reprojected = _make_ee_chain()
-    predictor_img.reproject.return_value = reprojected
-    clipped = _make_ee_chain()
-    reprojected.clip.return_value = clipped
-
-    with (
-        patch("app.services.sdm_service.get_aoi_from_nuts") as mock_aoi,
-        patch("app.services.sdm_service.geemap") as mock_geemap,
-        patch("app.services.sdm_service.ee") as mock_ee,
-        patch("app.services.sdm_service.pd") as mock_pd,
-    ):
-        mock_aoi.return_value = (MagicMock(), None)
-        mock_ee.Image.cat.return_value = predictor_img
-        # sampleRegions returns a FeatureCollection-like mock
-        predictor_img.sampleRegions.return_value = MagicMock()
-        # accuracy chain
-        train_fc_mock = MagicMock()
-        train_fc_mock.classify.return_value = MagicMock()
-        train_fc_mock.classify.return_value.errorMatrix.return_value.accuracy.return_value.getInfo.return_value = 0.9
-        predictor_img.sampleRegions.return_value.map.return_value = MagicMock()
-        fc_mock = MagicMock()
-        fc_mock.merge.return_value = train_fc_mock
-        predictor_img.sampleRegions.return_value.map.return_value = fc_mock
-        # presence / background merge
-        bg_mock = MagicMock()
-        bg_mock.map.return_value = MagicMock()
-        predictor_img.sampleRegions.side_effect = [fc_mock, bg_mock]
-        fc_mock.map.return_value = fc_mock
-        bg_mock.map.return_value = bg_mock
-        train_fc = MagicMock()
-        fc_mock.merge.return_value = train_fc
-        train_fc.classify.return_value.errorMatrix.return_value.accuracy.return_value.getInfo.return_value = 0.9
-        # classifier chain
-        classifier = MagicMock()
-        classifier.setOutputMode.return_value = classifier
-        classifier.explain.return_value.getInfo.return_value = {"importance": {}}
-        rf_cls = MagicMock()
-        rf_cls.setOutputMode.return_value = classifier
-        rf_cls.train.return_value = rf_cls
-        train_fc.classify.return_value = MagicMock()
-        mock_ee.Classifier.smileRandomForest.return_value = MagicMock(
-            **{
-                "setOutputMode.return_value": MagicMock(
-                    **{
-                        "train.return_value": MagicMock(
-                            **{
-                                "setOutputMode.return_value": classifier,
-                                "explain.return_value": MagicMock(
-                                    getInfo=MagicMock(return_value={"importance": {}})
-                                ),
-                            }
-                        )
-                    }
-                )
-            }
-        )
-        mock_pd.DataFrame.return_value = MagicMock()
-
-        from app.services.sdm_service import run_gee
-
-        run_gee(state)
-
-    # The predictor image must have been reprojected to EPSG:4326 at scale=30
-    predictor_img.reproject.assert_called_once_with(crs="EPSG:4326", scale=30)
-    # The reprojected image must then be clipped (not the original)
-    reprojected.clip.assert_called()
-
-
-# ---------------------------------------------------------------------------
-# Issue 2: run_local() must pass a 30 m-reprojected layer dict to
-#          get_species_features() so sampleRegions() uses a consistent scale
-# ---------------------------------------------------------------------------
-
-
-def test_run_local_passes_reprojected_layer_stack():
-    """Each layer passed to get_species_features() must have been reprojected to 30 m."""
-    state = _make_state(model_type="rf", data_mode="deepdive")
-
-    reprojected_imgs = {k: MagicMock() for k in state.selected_layers}
-    for k in state.selected_layers:
-        state.layer_stack[k].reproject.return_value = reprojected_imgs[k]
-
-    with (
-        patch("app.services.sdm_service.get_aoi_from_nuts") as mock_aoi,
-        patch("app.services.sdm_service.get_species_features") as mock_gsf,
-        patch("app.services.sdm_service.compute_sdm") as mock_compute,
-        patch("app.services.sdm_service.classify_image_aoi") as mock_classify,
-        patch("app.services.sdm_service.load_background_data") as mock_bg,
-    ):
-        mock_aoi.return_value = (MagicMock(), None)
-        presence_gdf = MagicMock()
-        predictors = MagicMock()
-        mock_gsf.return_value = (presence_gdf, predictors)
-        mock_bg.return_value = MagicMock()
-        model = MagicMock()
-        results_df = MagicMock()
-        ml_gdf = MagicMock()
-        mock_compute.return_value = (model, results_df, ml_gdf)
-        mock_classify.return_value = MagicMock()
-
-        from app.services.sdm_service import run_local
-
-        run_local(state)
-
-    # Verify each layer was reprojected to EPSG:4326 at scale=30 before sampling
-    for k in state.selected_layers:
-        state.layer_stack[k].reproject.assert_called_once_with(
-            crs="EPSG:4326", scale=30
-        )
-
-    # Verify get_species_features received the reprojected images, not the originals
-    _, kwargs = mock_gsf.call_args
-    passed_layer = kwargs["_layer"]
-    for k in state.selected_layers:
-        assert passed_layer[k] is reprojected_imgs[k], (
-            f"Layer '{k}' was not the reprojected image"
-        )
-
-
-# ---------------------------------------------------------------------------
-# Resolution: run_gee() must use state.resolution for all scale arguments
+# Resolution: run_gee() must use state.resolution for sampleRegions calls
 # ---------------------------------------------------------------------------
 
 
 def test_run_gee_uses_state_resolution():
-    """Both sampleRegions calls and the reproject call in run_gee() must use state.resolution."""
+    """Both sampleRegions calls in run_gee() must use state.resolution."""
     state = _make_state(model_type="rf", data_mode="explore")
     state.resolution = 100
 
     predictor_img = _make_ee_chain()
-    reprojected = _make_ee_chain()
-    predictor_img.reproject.return_value = reprojected
 
     with (
         patch("app.services.sdm_service.get_aoi_from_nuts") as mock_aoi,
@@ -195,9 +64,9 @@ def test_run_gee_uses_state_resolution():
         predictor_img.sampleRegions.side_effect = [fc_mock, bg_mock]
         fc_mock.map.return_value = fc_mock
         bg_mock.map.return_value = bg_mock
-        train_fc = MagicMock()
-        fc_mock.merge.return_value = train_fc
-        train_fc.classify.return_value.errorMatrix.return_value.accuracy.return_value.getInfo.return_value = 0.9
+        all_fc = MagicMock()
+        fc_mock.merge.return_value = all_fc
+        all_fc.randomColumn.return_value.filter.return_value.classify.return_value.errorMatrix.return_value.accuracy.return_value.getInfo.return_value = 0.9
         rf = MagicMock()
         rf.setOutputMode.return_value.train.return_value.setOutputMode.return_value = MagicMock(
             explain=MagicMock(
@@ -215,46 +84,6 @@ def test_run_gee_uses_state_resolution():
     for i, c in enumerate(predictor_img.sampleRegions.call_args_list):
         scale_used = c.kwargs.get("scale")
         assert scale_used == 100, f"sampleRegions call {i}: expected scale=100, got {scale_used}"
-
-    # reproject must use scale=100
-    predictor_img.reproject.assert_called_once_with(crs="EPSG:4326", scale=100)
-
-
-# ---------------------------------------------------------------------------
-# Resolution: run_local() pre-reproject must use state.resolution
-# ---------------------------------------------------------------------------
-
-
-def test_run_local_uses_state_resolution():
-    """Pre-reproject loop in run_local() must use state.resolution."""
-    state = _make_state(model_type="rf", data_mode="deepdive")
-    state.resolution = 100
-
-    reprojected_imgs = {k: MagicMock() for k in state.selected_layers}
-    for k in state.selected_layers:
-        state.layer_stack[k].reproject.return_value = reprojected_imgs[k]
-
-    with (
-        patch("app.services.sdm_service.get_aoi_from_nuts") as mock_aoi,
-        patch("app.services.sdm_service.get_species_features") as mock_gsf,
-        patch("app.services.sdm_service.compute_sdm") as mock_compute,
-        patch("app.services.sdm_service.classify_image_aoi") as mock_classify,
-        patch("app.services.sdm_service.load_background_data") as mock_bg,
-    ):
-        mock_aoi.return_value = (MagicMock(), None)
-        mock_gsf.return_value = (MagicMock(), MagicMock())
-        mock_bg.return_value = MagicMock()
-        mock_compute.return_value = (MagicMock(), MagicMock(), MagicMock())
-        mock_classify.return_value = MagicMock()
-
-        from app.services.sdm_service import run_local
-
-        run_local(state)
-
-    for k in state.selected_layers:
-        state.layer_stack[k].reproject.assert_called_once_with(
-            crs="EPSG:4326", scale=100
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -329,7 +158,7 @@ def _setup_maxent_run_gee_mocks(
     Returns
     -------
     train_fc : MagicMock
-        The merged training FeatureCollection mock.
+        The train-split FeatureCollection mock (after randomColumn + filter).
     maxent_base : MagicMock
         The object returned by ``ee.Classifier.amnhMaxent()``.
     """
@@ -337,8 +166,11 @@ def _setup_maxent_run_gee_mocks(
     predictor_img.sampleRegions.side_effect = [fc_mock, bg_mock]
     fc_mock.map.return_value = fc_mock
     bg_mock.map.return_value = bg_mock
-    train_fc = MagicMock()
-    fc_mock.merge.return_value = train_fc
+    # all_fc = presence.merge(background).randomColumn(seed=42)
+    all_fc = MagicMock()
+    fc_mock.merge.return_value = all_fc
+    # train_fc = all_fc.filter(lt(0.75)); both filter calls return the same mock
+    train_fc = all_fc.randomColumn.return_value.filter.return_value
     # Direct classify chain (used by RF; Maxent goes through .map() first)
     train_fc.classify.return_value.errorMatrix.return_value.accuracy.return_value.getInfo.return_value = (
         0.85
@@ -398,8 +230,118 @@ def test_run_gee_maxent_thresholds_probability_for_accuracy():
         run_gee(state)
 
     # Maxent outputs "probability" (float); .map() must be used to derive
-    # the discrete "classification" property for errorMatrix.
-    train_fc.classify.return_value.map.assert_called_once()
+    # the discrete "classification" property for errorMatrix (and also for
+    # the AUC eval rename), so it is called at least once.
+    train_fc.classify.return_value.map.assert_called()
+
+
+def _make_state_with_years(years: list[int], temporal_layers: list[str] | None = None):
+    """State mock with a real GeoDataFrame carrying per-point years."""
+    import geopandas as _gpd
+    from shapely.geometry import Point
+
+    state = _make_state(model_type="rf", data_mode="explore")
+    if temporal_layers is not None:
+        state.selected_layers = temporal_layers
+        state.layer_stack = {k: MagicMock() for k in temporal_layers}
+    state.species_gdf = _gpd.GeoDataFrame(
+        {"species": ["Sp"] * len(years), "year": years},
+        geometry=[Point(float(i), float(i)) for i in range(len(years))],
+        crs="EPSG:4326",
+    )
+    return state
+
+
+def test_run_gee_calls_get_layer_info_per_unique_year():
+    """get_layer_information must be called once per unique observation year
+    when temporal layers are selected."""
+    state = _make_state_with_years([2020, 2020, 2021, 2022], temporal_layers=["NDVI"])
+
+    predictor_img = _make_ee_chain()
+
+    with (
+        patch("app.services.sdm_service.get_aoi_from_nuts") as mock_aoi,
+        patch("app.services.sdm_service.geemap"),
+        patch("app.services.sdm_service.ee") as mock_ee,
+        patch("app.services.sdm_service.pd") as mock_pd,
+        patch("app.services.sdm_service.gee_service") as mock_gee,
+    ):
+        mock_aoi.return_value = (MagicMock(), None)
+        mock_ee.Image.cat.return_value = predictor_img
+        year_samples = MagicMock()
+        year_samples.filter.return_value = year_samples
+        predictor_img.sampleRegions.return_value = year_samples
+        year_samples.map.return_value = year_samples
+        flattened = MagicMock()
+        mock_ee.FeatureCollection.return_value.flatten.return_value = flattened
+        flattened.size.return_value.getInfo.return_value = 4
+        flattened.map.return_value = flattened
+        bg_mock = MagicMock()
+        bg_mock.map.return_value = bg_mock
+        predictor_img.sampleRegions.side_effect = None
+        predictor_img.sampleRegions.return_value = year_samples
+        all_fc = MagicMock()
+        flattened.merge.return_value = all_fc
+        all_fc.randomColumn.return_value.filter.return_value.classify.return_value.errorMatrix.return_value.accuracy.return_value.getInfo.return_value = 0.9
+        rf = MagicMock()
+        rf.setOutputMode.return_value.train.return_value.setOutputMode.return_value = MagicMock(
+            explain=MagicMock(
+                return_value=MagicMock(
+                    getInfo=MagicMock(return_value={"importance": {}})
+                )
+            )
+        )
+        mock_ee.Classifier.smileRandomForest.return_value = rf
+        mock_pd.DataFrame.return_value = MagicMock()
+        mock_gee.get_layer_information.return_value = {"NDVI": MagicMock()}
+
+        from app.services.sdm_service import run_gee
+        run_gee(state)
+
+    assert mock_gee.get_layer_information.call_count == 3
+    mock_gee.get_layer_information.assert_any_call(2020)
+    mock_gee.get_layer_information.assert_any_call(2021)
+    mock_gee.get_layer_information.assert_any_call(2022)
+
+
+def test_run_gee_no_temporal_layers_skips_loop():
+    """When only static layers are selected, get_layer_information must NOT
+    be called (fast path)."""
+    state = _make_state_with_years([2020, 2021], temporal_layers=["elevation"])
+
+    predictor_img = _make_ee_chain()
+
+    with (
+        patch("app.services.sdm_service.get_aoi_from_nuts") as mock_aoi,
+        patch("app.services.sdm_service.geemap"),
+        patch("app.services.sdm_service.ee") as mock_ee,
+        patch("app.services.sdm_service.pd") as mock_pd,
+        patch("app.services.sdm_service.gee_service") as mock_gee,
+    ):
+        mock_aoi.return_value = (MagicMock(), None)
+        mock_ee.Image.cat.return_value = predictor_img
+        fc_mock, bg_mock = MagicMock(), MagicMock()
+        predictor_img.sampleRegions.side_effect = [fc_mock, bg_mock]
+        fc_mock.map.return_value = fc_mock
+        bg_mock.map.return_value = bg_mock
+        all_fc = MagicMock()
+        fc_mock.merge.return_value = all_fc
+        all_fc.randomColumn.return_value.filter.return_value.classify.return_value.errorMatrix.return_value.accuracy.return_value.getInfo.return_value = 0.9
+        rf = MagicMock()
+        rf.setOutputMode.return_value.train.return_value.setOutputMode.return_value = MagicMock(
+            explain=MagicMock(
+                return_value=MagicMock(
+                    getInfo=MagicMock(return_value={"importance": {}})
+                )
+            )
+        )
+        mock_ee.Classifier.smileRandomForest.return_value = rf
+        mock_pd.DataFrame.return_value = MagicMock()
+
+        from app.services.sdm_service import run_gee
+        run_gee(state)
+
+    mock_gee.get_layer_information.assert_not_called()
 
 
 def test_run_gee_maxent_selects_probability_band():

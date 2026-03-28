@@ -16,8 +16,7 @@ from app.services import sdm_service
 
 _PIPELINE_LABELS: dict[str, str] = {
     "embedding": "Embedding dot-product pipeline",
-    "gee": "GEE-native pipeline (server-side, fast)",
-    "local": "Local sklearn pipeline (Deep Dive, downloads features)",
+    "gee": "GEE-native pipeline (server-side)",
 }
 
 _GEE_STEPS: list[str] = [
@@ -25,13 +24,7 @@ _GEE_STEPS: list[str] = [
     "Sampling features...",
     "Training classifier...",
     "Classifying AOI...",
-]
-
-_LOCAL_STEPS: list[str] = [
-    "Loading AOI...",
-    "Extracting features...",
-    "Training local model...",
-    "Classifying AOI...",
+    "Computing AUC...",
 ]
 
 _EMBEDDING_STEPS: list[str] = [
@@ -51,11 +44,9 @@ _LOW_ACCURACY_THRESHOLD = 0.7
 
 
 def _get_pipeline_key(state: AppState) -> str:
-    """Return the pipeline key ('embedding', 'local', or 'gee') for *state*."""
+    """Return the pipeline key ('embedding' or 'gee') for *state*."""
     if state.model_type == "embedding":
         return "embedding"
-    if state.data_mode == "deepdive":
-        return "local"
     return "gee"
 
 
@@ -63,8 +54,6 @@ def _get_steps(pipeline_key: str) -> list[str]:
     """Return the progress step labels for *pipeline_key*."""
     if pipeline_key == "embedding":
         return _EMBEDDING_STEPS
-    if pipeline_key == "local":
-        return _LOCAL_STEPS
     return _GEE_STEPS
 
 
@@ -127,6 +116,14 @@ def render(state: AppState, on_next: Callable, on_back: Callable) -> None:
                 if acc < _LOW_ACCURACY_THRESHOLD:
                     ui.badge("Low accuracy", color="warning").classes("text-xs")
 
+            if "excluded_presence_count" in state.results_df.columns:
+                n_excl = int(state.results_df["excluded_presence_count"].iloc[0])
+                if n_excl > 0:
+                    ui.label(
+                        f"{n_excl} presence point(s) excluded — "
+                        "no temporal layer values available at their observation year."
+                    ).classes("text-sm text-orange-600")
+
         container.set_visibility(True)
 
     def _run_sdm() -> None:
@@ -165,8 +162,6 @@ def render(state: AppState, on_next: Callable, on_back: Callable) -> None:
             # Select the appropriate service call
             if pipeline_key == "embedding":
                 service_fn = lambda: sdm_service.run_embedding(state)  # noqa: E731
-            elif pipeline_key == "local":
-                service_fn = lambda: sdm_service.run_local(state)  # noqa: E731
             else:
                 service_fn = lambda: sdm_service.run_gee(state)  # noqa: E731
 

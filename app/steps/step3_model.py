@@ -9,7 +9,7 @@ from nicegui import context as nicegui_context, ui
 
 from app.state import AppState
 from app.services import gee_service
-from app.services.layer_metadata import get_catalogue_by_category
+from app.services.layer_metadata import CATEGORY_NOTES, get_catalogue_by_category
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -54,6 +54,9 @@ def render(state: AppState, on_next: Callable, on_back: Callable) -> None:
     _next_btn_ref: list[ui.button] = []
     _layer_select_ref: list[ui.select] = []
     _hyperparam_section_ref: list[ui.element] = []
+    _gee_section_ref: list[ui.element] = []
+    _embedding_info_ref: list[ui.element] = []
+    _rf_only_ref: list[ui.element] = []
     _init_btn_ref: list[ui.button] = []
     _status_label_ref: list[ui.label] = []
     _custom_layer_status_ref: list[ui.label] = []
@@ -75,9 +78,18 @@ def render(state: AppState, on_next: Callable, on_back: Callable) -> None:
             _next_btn_ref[0].set_enabled(enabled)
 
     def _refresh_hyperparam_section() -> None:
-        """Show/hide hyperparameter section based on model type."""
+        """Show/hide hyperparameter section and RF-only fields based on model type."""
         if _hyperparam_section_ref:
             _hyperparam_section_ref[0].set_visibility(state.model_type != "embedding")
+        if _rf_only_ref:
+            _rf_only_ref[0].set_visibility(state.model_type == "rf")
+
+    def _refresh_gee_section() -> None:
+        """Show/hide the GEE layer section and embedding info based on model type."""
+        if _gee_section_ref:
+            _gee_section_ref[0].set_visibility(state.model_type != "embedding")
+        if _embedding_info_ref:
+            _embedding_info_ref[0].set_visibility(state.model_type == "embedding")
 
     def _on_layer_change(e) -> None:
         state.selected_layers = list(e.value) if e.value else []
@@ -86,6 +98,8 @@ def render(state: AppState, on_next: Callable, on_back: Callable) -> None:
     def _on_model_change(e) -> None:
         state.model_type = e.value or "rf"
         _refresh_hyperparam_section()
+        _refresh_gee_section()
+        _refresh_next_button()
 
     def _on_n_trees_change(e) -> None:
         try:
@@ -251,6 +265,9 @@ def render(state: AppState, on_next: Callable, on_back: Callable) -> None:
                         ui.label(
                             f"Units: {meta.units}  ·  Source: {meta.data_source}"
                         ).classes("text-xs text-gray-500")
+                note = CATEGORY_NOTES.get(category)
+                if note:
+                    ui.label(note).classes("text-xs text-gray-400 italic mt-1")
             ui.button("Close", on_click=dlg.close).classes("mt-4 w-full")
         dlg.open()
 
@@ -261,75 +278,83 @@ def render(state: AppState, on_next: Callable, on_back: Callable) -> None:
         ui.label("Step 3 — Layers & Model").classes("text-xl font-bold mb-4")
 
         with ui.column().classes("w-full gap-4"):
-            # 1. Layer multi-select + catalogue info button
-            with ui.row().classes("w-full items-end gap-2"):
-                layer_select = ui.select(
-                    label="Environmental Layers",
-                    multiple=True,
-                    options=_initial_layer_options,
-                    value=state.selected_layers,
-                    on_change=_on_layer_change,
-                ).classes("flex-1").props("use-chips")
-                _layer_select_ref.append(layer_select)
-
-                ui.button(
-                    icon="info",
-                    on_click=_open_layer_catalogue,
-                ).props("flat round").tooltip("Environmental layer catalogue")
-
-            # 2. Status label + hidden retry button (shown only on error)
-            status_label = ui.label("Initializing GEE layers…").classes("text-sm")
-            status_label.set_visibility(True)
-            _status_label_ref.append(status_label)
-
-            retry_btn = ui.button(
-                "Retry",
-                on_click=_init_layers,
-            ).classes("w-full")
-            retry_btn.set_visibility(False)
-            _init_btn_ref.append(retry_btn)
-
-            # Pre-populate status if stack is already loaded
-            if state.layer_stack is not None:
-                status_label.set_text(
-                    f"GEE initialized — {len(_initial_layer_options)} layers available."
-                )
-
-            # 2b. Custom GEE layer panel
-            with ui.expansion("Add custom layer", icon="add_circle").classes("w-full"):
-                with ui.column().classes("w-full gap-2"):
-                    ui.label(
-                        "Add any GEE Image asset as an extra predictor layer."
-                    ).classes("text-xs text-gray-500")
-
-                    custom_asset_id = ui.input(
-                        label="Asset ID",
-                        placeholder="projects/my-project/assets/dem",
-                    ).classes("w-full")
-                    _custom_asset_id_ref.append(custom_asset_id)
-
-                    custom_band = ui.input(
-                        label="Band (optional — leave blank for first band)",
-                        placeholder="b1",
-                    ).classes("w-full")
-                    _custom_band_ref.append(custom_band)
-
-                    custom_name = ui.input(
-                        label="Display name",
-                        placeholder="My DEM",
-                    ).classes("w-full")
-                    _custom_name_ref.append(custom_name)
+            # 1. GEE layer section (hidden for embedding model)
+            with ui.column().classes("w-full gap-2") as gee_section:
+                # 1a. Layer multi-select + catalogue info button
+                with ui.row().classes("w-full items-end gap-2"):
+                    layer_select = ui.select(
+                        label="Environmental Layers",
+                        multiple=True,
+                        options=_initial_layer_options,
+                        value=state.selected_layers,
+                        on_change=_on_layer_change,
+                    ).classes("flex-1").props("use-chips")
+                    _layer_select_ref.append(layer_select)
 
                     ui.button(
-                        "Add layer",
-                        on_click=_add_custom_layer,
-                    ).classes("w-full")
+                        icon="info",
+                        on_click=_open_layer_catalogue,
+                    ).props("flat round").tooltip("Environmental layer catalogue")
 
-                    custom_layer_status = ui.label("").classes("text-sm")
-                    custom_layer_status.set_visibility(False)
-                    _custom_layer_status_ref.append(custom_layer_status)
+                # 1b. Status label + hidden retry button (shown only on error)
+                status_label = ui.label("Initializing GEE layers…").classes("text-sm")
+                status_label.set_visibility(True)
+                _status_label_ref.append(status_label)
 
-            # 3. Model type select
+                retry_btn = ui.button(
+                    "Retry",
+                    on_click=_init_layers,
+                ).classes("w-full")
+                retry_btn.set_visibility(False)
+                _init_btn_ref.append(retry_btn)
+
+                # Pre-populate status if stack is already loaded
+                if state.layer_stack is not None:
+                    status_label.set_text(
+                        f"GEE initialized — {len(_initial_layer_options)} layers available."
+                    )
+
+                # 1c. Custom GEE layer panel
+                with ui.expansion("Add custom layer", icon="add_circle").classes(
+                    "w-full"
+                ):
+                    with ui.column().classes("w-full gap-2"):
+                        ui.label(
+                            "Add any GEE Image asset as an extra predictor layer. "
+                            "Custom layers are static — they use the image you provide "
+                            "for all presence points regardless of observation year."
+                        ).classes("text-xs text-gray-500")
+
+                        custom_asset_id = ui.input(
+                            label="Asset ID",
+                            placeholder="projects/my-project/assets/dem",
+                        ).classes("w-full")
+                        _custom_asset_id_ref.append(custom_asset_id)
+
+                        custom_band = ui.input(
+                            label="Band (optional — leave blank for first band)",
+                            placeholder="b1",
+                        ).classes("w-full")
+                        _custom_band_ref.append(custom_band)
+
+                        custom_name = ui.input(
+                            label="Display name",
+                            placeholder="My DEM",
+                        ).classes("w-full")
+                        _custom_name_ref.append(custom_name)
+
+                        ui.button(
+                            "Add layer",
+                            on_click=_add_custom_layer,
+                        ).classes("w-full")
+
+                        custom_layer_status = ui.label("").classes("text-sm")
+                        custom_layer_status.set_visibility(False)
+                        _custom_layer_status_ref.append(custom_layer_status)
+
+            _gee_section_ref.append(gee_section)
+
+            # 2. Model type select
             ui.select(
                 label="Model",
                 options=_MODEL_OPTIONS,
@@ -337,14 +362,15 @@ def render(state: AppState, on_next: Callable, on_back: Callable) -> None:
                 on_change=_on_model_change,
             ).classes("w-full")
 
-            # 3b. Embedding info (shown only for embedding mode)
-            if state.model_type == "embedding":
+            # 2b. Embedding info (shown only for embedding mode)
+            with ui.column() as embedding_info:
                 ui.label(
                     f"Embedding mode: uses Google Satellite Embedding V1 "
                     f"(year {state.year_start}-{state.year_end}, will use closest available)"
                 ).classes("text-sm text-blue-600")
+            _embedding_info_ref.append(embedding_info)
 
-            # 4. Hyperparameters section (hidden for "embedding")
+            # 3. Hyperparameters section (hidden for "embedding")
             with ui.column().classes(
                 "w-full gap-2 pl-4 border-l-2 border-gray-300"
             ) as hyperparam_section:
@@ -352,23 +378,27 @@ def render(state: AppState, on_next: Callable, on_back: Callable) -> None:
                     "font-semibold text-sm text-gray-600"
                 )
 
-                ui.number(
-                    label="Number of Trees",
-                    value=state.n_trees,
-                    min=10,
-                    max=500,
-                    step=10,
-                    on_change=_on_n_trees_change,
-                ).classes("w-full")
+                # RF-only fields (hidden for Maxent and Embedding)
+                with ui.column().classes("w-full gap-2") as rf_only:
+                    ui.number(
+                        label="Number of Trees",
+                        value=state.n_trees,
+                        min=10,
+                        max=500,
+                        step=10,
+                        on_change=_on_n_trees_change,
+                    ).classes("w-full")
 
-                ui.number(
-                    label="Max Tree Depth",
-                    value=state.max_depth,
-                    min=1,
-                    max=50,
-                    step=1,
-                    on_change=_on_max_depth_change,
-                ).classes("w-full")
+                    ui.number(
+                        label="Max Tree Depth",
+                        value=state.max_depth,
+                        min=1,
+                        max=50,
+                        step=1,
+                        on_change=_on_max_depth_change,
+                    ).classes("w-full")
+
+                _rf_only_ref.append(rf_only)
 
                 ui.number(
                     label="Train Size (%)",
@@ -390,6 +420,7 @@ def render(state: AppState, on_next: Callable, on_back: Callable) -> None:
 
             # Reflect initial visibility
             _refresh_hyperparam_section()
+            _refresh_gee_section()
 
             # 5. Navigation buttons
             with ui.row().classes("w-full justify-between mt-2"):
@@ -405,6 +436,6 @@ def render(state: AppState, on_next: Callable, on_back: Callable) -> None:
             _refresh_next_button()
 
     # Auto-initialize GEE layers when entering the step for the first time.
-    # _init_layers() schedules an async coroutine and returns immediately.
-    if state.layer_stack is None:
+    # Skip for embedding — it never uses GEE layers.
+    if state.model_type != "embedding" and state.layer_stack is None:
         _init_layers()

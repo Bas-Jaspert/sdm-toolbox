@@ -19,12 +19,17 @@ class LayerMeta:
         Originating dataset or product name.
     category:
         Display category used for grouping in the UI.
+    temporal:
+        ``True`` if the layer is sourced from a year-filtered GEE collection
+        (ERA5, Landsat NDVI, Sentinel-2 indices).  ``False`` for static layers
+        and user-supplied custom layers.
     """
 
     description: str
     units: str
     data_source: str
     category: str
+    temporal: bool = False
 
 
 LAYER_CATALOGUE: dict[str, LayerMeta] = {
@@ -56,18 +61,21 @@ LAYER_CATALOGUE: dict[str, LayerMeta] = {
         "−1–1",
         "Landsat 8 8-day composite",
         "Vegetation",
+        temporal=True,
     ),
     "NARI": LayerMeta(
         "Narrowband Anthocyanin Reflectance Index — scrub/heath indicator",
         "index",
         "Sentinel-2",
         "Vegetation",
+        temporal=True,
     ),
     "NCRI": LayerMeta(
         "Narrowband Carotenoid Reflectance Index — scrub/heath indicator",
         "index",
         "Sentinel-2",
         "Vegetation",
+        temporal=True,
     ),
     "Trees": LayerMeta(
         "Canopy height masked to tree pixels", "m", "Meta Canopy Height", "Vegetation"
@@ -86,15 +94,16 @@ LAYER_CATALOGUE: dict[str, LayerMeta] = {
         "m",
         "ERA5-Land Hourly",
         "Climate",
+        temporal=True,
     ),
     "snow_depth": LayerMeta(
-        "Depth of snow on ground", "m", "ERA5-Land Hourly", "Climate"
+        "Depth of snow on ground", "m", "ERA5-Land Hourly", "Climate", temporal=True
     ),
     "snow_cover": LayerMeta(
-        "Fraction of grid cell covered by snow", "0–1", "ERA5-Land Hourly", "Climate"
+        "Fraction of grid cell covered by snow", "0–1", "ERA5-Land Hourly", "Climate", temporal=True
     ),
     "snow_albedo": LayerMeta(
-        "Albedo of snow surface", "0–1", "ERA5-Land Hourly", "Climate"
+        "Albedo of snow surface", "0–1", "ERA5-Land Hourly", "Climate", temporal=True
     ),
     # ------------------------------------------------------------------
     # Land Cover & Human Impact
@@ -192,7 +201,50 @@ LAYER_CATALOGUE: dict[str, LayerMeta] = {
     "b19": LayerMeta(
         "Precipitation of Coldest Quarter", "mm", "WorldClim BioClim", "BioClim"
     ),
+    # ------------------------------------------------------------------
+    # Soil Properties (SoilGrids 250 m v2, 0–5 cm depth, mean)
+    # ------------------------------------------------------------------
+    "soil_ph": LayerMeta(
+        "Soil pH measured in water — influences nutrient availability and root viability",
+        "pH",
+        "SoilGrids 250m v2 (ISRIC)",
+        "Soil Properties",
+    ),
+    "soil_soc": LayerMeta(
+        "Soil organic carbon content — proxy for habitat quality and moisture retention",
+        "g/kg",
+        "SoilGrids 250m v2 (ISRIC)",
+        "Soil Properties",
+    ),
+    "soil_clay": LayerMeta(
+        "Clay fraction of fine earth — affects water-holding capacity and compaction",
+        "g/kg",
+        "SoilGrids 250m v2 (ISRIC)",
+        "Soil Properties",
+    ),
+    "soil_sand": LayerMeta(
+        "Sand fraction of fine earth — affects drainage and aeration",
+        "g/kg",
+        "SoilGrids 250m v2 (ISRIC)",
+        "Soil Properties",
+    ),
+    "soil_bdod": LayerMeta(
+        "Bulk density of fine earth — proxy for soil compaction and root penetration",
+        "g/cm³",
+        "SoilGrids 250m v2 (ISRIC)",
+        "Soil Properties",
+    ),
+    "soil_nitrogen": LayerMeta(
+        "Total nitrogen content — indicator of soil fertility",
+        "g/kg",
+        "SoilGrids 250m v2 (ISRIC)",
+        "Soil Properties",
+    ),
 }
+
+TEMPORAL_LAYERS: frozenset[str] = frozenset(
+    name for name, meta in LAYER_CATALOGUE.items() if meta.temporal
+)
 
 _CATEGORY_ORDER: list[str] = [
     "Terrain",
@@ -200,7 +252,15 @@ _CATEGORY_ORDER: list[str] = [
     "Climate",
     "Land Cover & Human Impact",
     "BioClim",
+    "Soil Properties",
 ]
+
+CATEGORY_NOTES: dict[str, str] = {
+    "Soil Properties": (
+        "European users: higher-resolution ESDAC soil data can be added "
+        "via the custom layer panel."
+    ),
+}
 
 
 def get_catalogue_by_category() -> dict[str, list[tuple[str, LayerMeta]]]:

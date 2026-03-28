@@ -140,7 +140,7 @@ def fetch_presences(
     if mode == "explore":
         return _fetch_explore(species, country, year_start, year_end)
     elif mode == "deepdive":
-        return _fetch_deepdive(species, country, year_start, year_end)
+        return _fetch_deepdive(species, country, year_start, year_end, progress_callback)
     else:  # mode == "own"
         if not dataset_key:
             raise ValueError("dataset_key is required for 'own' mode")
@@ -172,7 +172,7 @@ def _fetch_explore(
 
     try:
         response = requests.get(
-            "https://api.gbif.org/v1/occurrence/search", params=params, timeout=30
+            "https://api.gbif.org/v1/occurrence/search", params=params, timeout=120
         )
         response.raise_for_status()
         data = response.json()
@@ -181,20 +181,7 @@ def _fetch_explore(
         if not records:
             return _empty_gdf()
 
-        df = pd.json_normalize(records)
-
-        if "species" not in df.columns:
-            if "scientificName" in df.columns:
-                df["species"] = df["scientificName"].copy()
-            else:
-                KeyError
-
-        gdf = gpd.GeoDataFrame(
-            df,
-            geometry=gpd.points_from_xy(df["decimalLongitude"], df["decimalLatitude"]),
-            crs="EPSG:4326",
-        )[["species", "year", "geometry"]]
-        return _cleanup_gdf(gdf)
+        return _records_to_gdf(records, species)
 
     except Exception as e:
         print(f"Error fetching data in explore mode: {e}")
@@ -202,57 +189,53 @@ def _fetch_explore(
 
 
 def _fetch_deepdive(
-    species: str, country: str, year_start: int, year_end: int
+    species: str,
+    country: str,
+    year_start: int,
+    year_end: int,
+    progress_callback: Optional[Callable[[str], None]] = None,
 ) -> gpd.GeoDataFrame:
-    """Paginated GBIF REST API query - all records."""
-    all_records = []
-    offset = 0
+    """Paginated GBIF REST API query — one year at a time, all records."""
+    if progress_callback is None:
+
+        def progress_callback(msg: str) -> None:
+            pass
+
+    all_records: list[dict] = []
+    years = range(year_start, year_end + 1)
+    total = len(years)
     limit = 300
 
-    try:
-        while True:
-            result = occurrences.search(
-                scientificName=species,
-                country=country,
-                hasCoordinate=True,
-                basisOfRecord="HUMAN_OBSERVATION",
-                year=f"{year_start},{year_end}",
-                limit=limit,
-                offset=offset,
-            )
+    for idx, year in enumerate(years, start=1):
+        progress_callback(f"Fetching year {year} ({idx}/{total})…")
+        offset = 0
+        try:
+            while True:
+                result = occurrences.search(
+                    scientificName=species,
+                    country=country,
+                    hasCoordinate=True,
+                    basisOfRecord="HUMAN_OBSERVATION",
+                    year=str(year),
+                    limit=limit,
+                    offset=offset,
+                    timeout=120,
+                )
+                records = result.get("results", [])
+                if not records:
+                    break
+                all_records.extend(records)
+                if len(records) < limit:
+                    break
+                offset += limit
+        except Exception as exc:
+            progress_callback(f"Warning: year {year} failed — {exc}")
+            continue  # retain records from other years
 
-            records = result.get("results", [])
-            if not records:
-                break
-
-            all_records.extend(records)
-
-            if len(records) < limit:
-                break
-
-            offset += limit
-
-        if not all_records:
-            return _empty_gdf()
-
-        df = pd.json_normalize(all_records)
-
-        if "species" not in df.columns:
-            if "scientificName" in df.columns:
-                df["species"] = df["scientificName"].copy()
-            else:
-                df["species"] = species
-
-        gdf = gpd.GeoDataFrame(
-            df,
-            geometry=gpd.points_from_xy(df["decimalLongitude"], df["decimalLatitude"]),
-            crs="EPSG:4326",
-        )[["species", "year", "geometry"]]
-        return _cleanup_gdf(gdf)
-
-    except Exception as e:
-        print(f"Error fetching data in deepdive mode: {e}")
+    if not all_records:
         return _empty_gdf()
+
+    return _records_to_gdf(all_records, species)
 
 
 def _fetch_own(
@@ -298,6 +281,24 @@ def _fetch_own(
         return _empty_gdf()
 
 
+def _records_to_gdf(
+    records: list[dict], species: str
+) -> gpd.GeoDataFrame:
+    """Convert a list of GBIF occurrence dicts to a cleaned GeoDataFrame."""
+    df = pd.json_normalize(records)
+    if "species" not in df.columns:
+        if "scientificName" in df.columns:
+            df["species"] = df["scientificName"].copy()
+        else:
+            df["species"] = species
+    gdf = gpd.GeoDataFrame(
+        df,
+        geometry=gpd.points_from_xy(df["decimalLongitude"], df["decimalLatitude"]),
+        crs="EPSG:4326",
+    )[["species", "year", "geometry"]]
+    return _cleanup_gdf(gdf)
+
+
 def _empty_gdf() -> gpd.GeoDataFrame:
     """Return empty GeoDataFrame with correct schema."""
     return gpd.GeoDataFrame(
@@ -307,12 +308,19 @@ def _empty_gdf() -> gpd.GeoDataFrame:
     )
 
 
+_GDF_PRESERVED_COLS: frozenset[str] = frozenset({"geometry", "year"})
+
+
 def _cleanup_gdf(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
-    """Convert non-geometry columns to strings for GeoJSON compatibility."""
+    """Convert non-geometry columns to strings for GeoJSON compatibility.
+
+    The ``year`` column is left as-is (integer) so it can be used for
+    server-side filtering in GEE.
+    """
     if gdf is None or gdf.empty:
         return gdf
     for col in gdf.columns:
-        if col == "geometry":
+        if col in _GDF_PRESERVED_COLS:
             continue
         gdf[col] = gdf[col].apply(lambda x: str(x) if pd.notna(x) else None)
     return gdf

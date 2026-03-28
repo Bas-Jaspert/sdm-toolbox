@@ -9,14 +9,14 @@ class TestAppState:
         assert state.species == ""
         assert state.country_code == ""
         assert state.county_name == ""
-        assert state.year_start == 2015
-        assert state.year_end == 2024
+        assert state.year_start == 2018
+        assert state.year_end == 2025
         assert state.data_mode == "explore"
         assert state.model_type == "rf"
         assert state.n_trees == 100
         assert state.max_depth == 3
         assert state.train_size == 0.75
-        assert state.resolution == 30
+        assert state.resolution == 100
         assert state.selected_layers == []
         assert state.layer_stack is None
         assert state.species_gdf is None
@@ -48,7 +48,6 @@ class TestAppState:
             "model",
             "results_df",
             "classified_img",
-            "ml_gdf",
             "whatif_offsets",
         ]
 
@@ -83,5 +82,5 @@ class TestAppState:
 
     def test_state_resolution_default(self):
         state = AppState()
-        assert state.resolution == 30
+        assert state.resolution == 100
         assert state.resolution > 0

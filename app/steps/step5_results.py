@@ -248,13 +248,11 @@ def render(state: AppState, on_back: Callable) -> None:
         asyncio.ensure_future(_run())
 
     def _reclassify() -> None:
-        """Apply what-if offsets and re-classify (local/sklearn models only)."""
-        # Check whether re-classification is feasible
-        if state.model is None or isinstance(state.model, str):
+        """Apply what-if offsets and re-classify using the stored GEE classifier."""
+        if state.model is None or state.model_type == "embedding":
             if _reclassify_status_ref:
                 _reclassify_status_ref[0].set_text(
-                    "What-If re-classification requires the local pipeline "
-                    "(Deep Dive mode). For GEE and Embedding modes, use the notebook."
+                    "What-If is not available for the Embedding model."
                 )
                 _reclassify_status_ref[0].set_visibility(True)
             return
@@ -267,15 +265,6 @@ def render(state: AppState, on_back: Callable) -> None:
                 _reclassify_status_ref[0].set_visibility(True)
             return
 
-        if state.ml_gdf is None:
-            if _reclassify_status_ref:
-                _reclassify_status_ref[0].set_text(
-                    "Training data not available — What-If requires Deep Dive mode."
-                )
-                _reclassify_status_ref[0].set_visibility(True)
-            return
-
-        # Show progress
         if _reclassify_progress_ref:
             _reclassify_progress_ref[0].set_visibility(True)
             _reclassify_progress_ref[0].value = 0.0
@@ -286,7 +275,6 @@ def render(state: AppState, on_back: Callable) -> None:
         async def _run() -> None:
             loop = asyncio.get_event_loop()
 
-            # Read current offset values from inputs
             for layer, refs in _whatif_offset_inputs.items():
                 if refs:
                     try:
@@ -295,7 +283,7 @@ def render(state: AppState, on_back: Callable) -> None:
                         state.whatif_offsets[layer] = 0.0
 
             try:
-                from toolbox.utils import classify_image_aoi, get_aoi_from_nuts
+                from toolbox.utils import get_aoi_from_nuts
 
                 with _client:
                     if _reclassify_progress_ref:
@@ -316,13 +304,13 @@ def render(state: AppState, on_back: Callable) -> None:
                         county_name=state.county_name or None,
                     )
                     aoi = county_aoi if county_aoi is not None else country_aoi
-                    return classify_image_aoi(
-                        modified_predictors,
-                        aoi,
-                        state.ml_gdf,
-                        state.model,
-                        state.selected_layers,
-                    )
+                    if state.model_type == "maxent":
+                        return (
+                            modified_predictors.clip(aoi)
+                            .classify(state.model)
+                            .select("probability")
+                        )
+                    return modified_predictors.clip(aoi).classify(state.model)
 
                 with _client:
                     if _reclassify_progress_ref:
